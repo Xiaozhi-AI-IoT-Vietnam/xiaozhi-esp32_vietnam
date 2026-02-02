@@ -633,6 +633,14 @@ void Application::Start() {
       // Notification messages are handled by OnMqttNotification callback
       // This is called via mqtt_notification.cc, so just log and skip here
       ESP_LOGD(TAG, "Notification message - handled by OnMqttNotification");
+    } else if (strcmp(type->valuestring, "goodbye") == 0) {
+      ESP_LOGI(TAG, "Received goodbye from server");
+      Schedule([this]() {
+        if (protocol_->IsAudioChannelOpened()) {
+          protocol_->CloseAudioChannel();
+        }
+        SetDeviceState(kDeviceStateIdle);
+      });
     } else {
       ESP_LOGW(TAG, "Unknown message type: %s", type->valuestring);
     }

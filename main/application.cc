@@ -874,6 +874,7 @@ void Application::SetDeviceState(DeviceState state) {
   case kDeviceStateIdle:
     display->SetStatus(Lang::Strings::STANDBY);
     display->SetEmotion("neutral");
+    display->SetChatMessage("system", ""); // Clear any previous messages
     audio_service_.EnableVoiceProcessing(false);
     audio_service_.EnableWakeWordDetection(true);
     break;

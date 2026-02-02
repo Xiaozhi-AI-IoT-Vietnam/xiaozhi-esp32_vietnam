@@ -229,8 +229,10 @@ void MqttNotification::HandleMessage(const char *topic, const char *data,
   const char *type_str = type->valuestring;
 
   // Handle different message types
+  // Types: notification, reminder, info, warning, alert
   if (strcmp(type_str, "notification") == 0 ||
-      strcmp(type_str, "reminder") == 0) {
+      strcmp(type_str, "reminder") == 0 || strcmp(type_str, "info") == 0 ||
+      strcmp(type_str, "warning") == 0 || strcmp(type_str, "alert") == 0) {
     // Parse notification
     MqttNotificationData notification;
     ParseNotification(root, notification);
@@ -282,9 +284,6 @@ void MqttNotification::ParseNotification(const cJSON *root,
   cJSON *content = cJSON_GetObjectItem(root, "content");
   cJSON *mess =
       cJSON_GetObjectItem(root, "mess"); // Backend uses 'mess' for TTS content
-  cJSON *useLLM = cJSON_GetObjectItem(root, "useLLM");
-  cJSON *useTTS =
-      cJSON_GetObjectItem(root, "useTTS"); // Alternative flag for TTS
 
   notification.type = cJSON_IsString(type) ? type->valuestring : "notification";
   notification.title = cJSON_IsString(title) ? title->valuestring : "";
@@ -299,12 +298,16 @@ void MqttNotification::ParseNotification(const cJSON *root,
   }
 
   // useLLM or useTTS flag for TTS playback
+  // Server controls this via "Phát âm thanh (TTS)" toggle
+  cJSON *useLLM = cJSON_GetObjectItem(root, "useLLM");
+  cJSON *useTTS = cJSON_GetObjectItem(root, "useTTS");
+
   if (cJSON_IsBool(useTTS)) {
     notification.useLLM = cJSON_IsTrue(useTTS);
   } else if (cJSON_IsBool(useLLM)) {
     notification.useLLM = cJSON_IsTrue(useLLM);
   } else {
-    notification.useLLM = true; // Default to TTS enabled
+    notification.useLLM = true; // Default to TTS enabled if not specified
   }
 
   // Parse extra data if present

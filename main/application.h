@@ -1,28 +1,32 @@
 #ifndef _APPLICATION_H_
 #define _APPLICATION_H_
 
+#include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/event_groups.h>
 #include <freertos/task.h>
-#include <esp_timer.h>
 
-#include <string>
-#include <mutex>
 #include <deque>
 #include <memory>
+#include <mutex>
+#include <string>
 
-#include "protocol.h"
-#include "ota.h"
 #include "audio_service.h"
 #include "device_state_event.h"
-#include "esp32_sd_music.h"
 #include "esp32_music.h"
 #include "esp32_radio.h"
+#include "esp32_sd_music.h"
+#include "ota.h"
+#include "protocol.h"
+
+#ifdef CONFIG_ENABLE_MQTT_NOTIFICATIONS
+#include "mqtt_notification.h"
+#endif
 
 // --- Display Weather ---
 #include "display.h"
-#include "features/weather/weather_service.h"
 #include "features/weather/weather_model.h"
+#include "features/weather/weather_service.h"
 // ---------------------
 
 #define MAIN_EVENT_SCHEDULE (1 << 0)
@@ -33,100 +37,104 @@
 #define MAIN_EVENT_CHECK_NEW_VERSION_DONE (1 << 5)
 #define MAIN_EVENT_CLOCK_TICK (1 << 6)
 
-
 enum AecMode {
-    kAecOff,
-    kAecOnDeviceSide,
-    kAecOnServerSide,
+  kAecOff,
+  kAecOnDeviceSide,
+  kAecOnServerSide,
 };
 
 class Application {
 public:
-    static Application& GetInstance() {
-        static Application instance;
-        return instance;
-    }
-    // 删除拷贝构造函数和赋值运算符
-    Application(const Application&) = delete;
-    Application& operator=(const Application&) = delete;
+  static Application &GetInstance() {
+    static Application instance;
+    return instance;
+  }
+  // 删除拷贝构造函数和赋值运算符
+  Application(const Application &) = delete;
+  Application &operator=(const Application &) = delete;
 
-    void Start();
-    void MainEventLoop();
-    DeviceState GetDeviceState() const { return device_state_; }
-    bool IsVoiceDetected() const { return audio_service_.IsVoiceDetected(); }
-    void Schedule(std::function<void()> callback);
-    void SetDeviceState(DeviceState state);
-    void Alert(const char* status, const char* message, const char* emotion = "", const std::string_view& sound = "");
-    void DismissAlert();
-    void AbortSpeaking(AbortReason reason);
-    void ToggleChatState();
-    void StartListening();
-    void StopListening();
-    void Reboot();
-    void WakeWordInvoke(const std::string& wake_word);
-    bool UpgradeFirmware(Ota& ota, const std::string& url = "");
-    bool CanEnterSleepMode();
-    void SendMcpMessage(const std::string& payload);
-    void SetAecMode(AecMode mode);
-    AecMode GetAecMode() const { return aec_mode_; }
-    // 新增：接收外部音频数据（如音乐播放）
-    void AddAudioData(AudioStreamPacket&& packet);
-    void PlaySound(const std::string_view& sound);
-    AudioService& GetAudioService() { return audio_service_; }
-	Esp32Music* GetMusic() { return music_; }
-	Esp32Radio* GetRadio() { return radio_; }
-	Esp32SdMusic* GetSdMusic() { return sd_music_; }
+  void Start();
+  void MainEventLoop();
+  DeviceState GetDeviceState() const { return device_state_; }
+  bool IsVoiceDetected() const { return audio_service_.IsVoiceDetected(); }
+  void Schedule(std::function<void()> callback);
+  void SetDeviceState(DeviceState state);
+  void Alert(const char *status, const char *message, const char *emotion = "",
+             const std::string_view &sound = "");
+  void DismissAlert();
+  void AbortSpeaking(AbortReason reason);
+  void ToggleChatState();
+  void StartListening();
+  void StopListening();
+  void Reboot();
+  void WakeWordInvoke(const std::string &wake_word);
+  bool UpgradeFirmware(Ota &ota, const std::string &url = "");
+  bool CanEnterSleepMode();
+  void SendMcpMessage(const std::string &payload);
+  void SetAecMode(AecMode mode);
+  AecMode GetAecMode() const { return aec_mode_; }
+  // 新增：接收外部音频数据（如音乐播放）
+  void AddAudioData(AudioStreamPacket &&packet);
+  void PlaySound(const std::string_view &sound);
+  AudioService &GetAudioService() { return audio_service_; }
+  Esp32Music *GetMusic() { return music_; }
+  Esp32Radio *GetRadio() { return radio_; }
+  Esp32SdMusic *GetSdMusic() { return sd_music_; }
 
 private:
-    Application();
-    ~Application();
+  Application();
+  ~Application();
 
-    std::mutex mutex_;
-    std::deque<std::function<void()>> main_tasks_;
-    std::unique_ptr<Protocol> protocol_;
-    EventGroupHandle_t event_group_ = nullptr;
-    esp_timer_handle_t clock_timer_handle_ = nullptr;
-    volatile DeviceState device_state_ = kDeviceStateUnknown;
-    ListeningMode listening_mode_ = kListeningModeAutoStop;
-    AecMode aec_mode_ = kAecOff;
-    std::string last_error_message_;
-    AudioService audio_service_;
-    Esp32Music* music_ = nullptr;
-    Esp32Radio* radio_ = nullptr;
-    Esp32SdMusic* sd_music_ = nullptr;
+  std::mutex mutex_;
+  std::deque<std::function<void()>> main_tasks_;
+  std::unique_ptr<Protocol> protocol_;
+  EventGroupHandle_t event_group_ = nullptr;
+  esp_timer_handle_t clock_timer_handle_ = nullptr;
+  volatile DeviceState device_state_ = kDeviceStateUnknown;
+  ListeningMode listening_mode_ = kListeningModeAutoStop;
+  AecMode aec_mode_ = kAecOff;
+  std::string last_error_message_;
+  AudioService audio_service_;
+  Esp32Music *music_ = nullptr;
+  Esp32Radio *radio_ = nullptr;
+  Esp32SdMusic *sd_music_ = nullptr;
 
-    bool has_server_time_ = false;
-    bool aborted_ = false;
-    int clock_ticks_ = 0;
-    TaskHandle_t check_new_version_task_handle_ = nullptr;
-    TaskHandle_t main_event_loop_task_handle_ = nullptr;
+  bool has_server_time_ = false;
+  bool aborted_ = false;
+  int clock_ticks_ = 0;
+  TaskHandle_t check_new_version_task_handle_ = nullptr;
+  TaskHandle_t main_event_loop_task_handle_ = nullptr;
 
-    void OnWakeWordDetected();
-    void CheckNewVersion(Ota& ota);
-    void CheckAssetsVersion();
-    void ShowActivationCode(const std::string& code, const std::string& message);
-    void SetListeningMode(ListeningMode mode);
+  void OnWakeWordDetected();
+  void CheckNewVersion(Ota &ota);
+  void CheckAssetsVersion();
+  void ShowActivationCode(const std::string &code, const std::string &message);
+  void SetListeningMode(ListeningMode mode);
+
+#ifdef CONFIG_ENABLE_MQTT_NOTIFICATIONS
+  // MQTT Push Notification handling
+  void InitializeMqttNotifications();
+  void OnMqttNotification(const MqttNotificationData &notification);
+  void OnPushNotification(const std::string &title, const std::string &content);
+#endif
 
 #ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
-    // --- Weather Info ---
-    void UpdateIdleDisplay();
-    // -------------------
+  // --- Weather Info ---
+  void UpdateIdleDisplay();
+  // -------------------
 #endif
 };
 
-
 class TaskPriorityReset {
 public:
-    TaskPriorityReset(BaseType_t priority) {
-        original_priority_ = uxTaskPriorityGet(NULL);
-        vTaskPrioritySet(NULL, priority);
-    }
-    ~TaskPriorityReset() {
-        vTaskPrioritySet(NULL, original_priority_);
-    }
+  TaskPriorityReset(BaseType_t priority) {
+    original_priority_ = uxTaskPriorityGet(NULL);
+    vTaskPrioritySet(NULL, priority);
+  }
+  ~TaskPriorityReset() { vTaskPrioritySet(NULL, original_priority_); }
 
 private:
-    BaseType_t original_priority_;
+  BaseType_t original_priority_;
 };
 
 #endif // _APPLICATION_H_

@@ -2,7 +2,7 @@ menu "Xiaozhi Assistant"
 
 config OTA_URL
     string "Default OTA URL"
-    default "https://api.tenclass.net/xiaozhi/ota/"
+    default "https://xiaozhi-ai-iot.vn/api/ota"
     help
         The application will access this URL to check for new firmwares and server address.
 
@@ -807,6 +807,42 @@ menu "TAIJIPAI_S3_CONFIG"
     default y
     help
         启动双声道
+endmenu
+
+menu "MQTT Push Notifications"
+
+    config ENABLE_MQTT_NOTIFICATIONS
+        bool "Enable MQTT push notifications"
+        default y
+        help
+            Enable MQTT client for receiving push notifications from server.
+            This allows the server to send reminders even when device is idle.
+
+    config MQTT_KEEPALIVE_SECONDS
+        int "MQTT Keepalive interval (seconds)"
+        default 60
+        range 30 300
+        depends on ENABLE_MQTT_NOTIFICATIONS
+        help
+            Interval for MQTT keepalive ping. Lower values detect disconnection faster
+            but use more power. Recommended: 60 seconds.
+
+    config MQTT_RECONNECT_TIMEOUT_MS
+        int "MQTT Reconnect timeout (milliseconds)"
+        default 5000
+        range 1000 30000
+        depends on ENABLE_MQTT_NOTIFICATIONS
+        help
+            Time to wait before attempting to reconnect after disconnection.
+
+    config MQTT_BUFFER_SIZE
+        int "MQTT Buffer size (bytes)"
+        default 1024
+        range 512 4096
+        depends on ENABLE_MQTT_NOTIFICATIONS
+        help
+            Buffer size for MQTT messages. 1024 bytes is sufficient for notifications.
+
 endmenu
 
 endmenu

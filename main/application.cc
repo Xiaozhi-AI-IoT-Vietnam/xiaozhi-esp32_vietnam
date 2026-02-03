@@ -185,8 +185,15 @@ void Application::CheckNewVersion(Ota &ota) {
     }
 
     // This will block the loop until the activation is done or timeout
-    for (int i = 0; i < 10; ++i) {
-      ESP_LOGI(TAG, "Activating... %d/%d", i + 1, 10);
+    // Use timeout from server (default 30s), each iteration is 3 seconds
+    int timeout_ms = ota.GetActivationTimeoutMs();
+    int max_iterations = timeout_ms / 3000; // 3 seconds per iteration
+    if (max_iterations < 1)
+      max_iterations = 1;
+
+    for (int i = 0; i < max_iterations; ++i) {
+      ESP_LOGI(TAG, "Activating... %d/%d (timeout: %dms)", i + 1,
+               max_iterations, timeout_ms);
       esp_err_t err = ota.Activate();
       if (err == ESP_OK) {
         xEventGroupSetBits(event_group_, MAIN_EVENT_CHECK_NEW_VERSION_DONE);

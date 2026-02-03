@@ -293,8 +293,14 @@ bool MqttProtocol::OpenAudioChannel() {
 
   udp_->Connect(udp_server_, udp_port_);
 
-  // Send bind packet so server knows our UDP address
-  // Format: [1 byte type=0x00] [session_id string]
+  // Send multiple bind packet formats for compatibility with different server
+  // versions Format 1: "HELLO:session_id" (new format expected by server)
+  std::string hello_packet = "HELLO:" + session_id_;
+  udp_->Send(hello_packet);
+  ESP_LOGI(TAG, "Sent UDP hello packet: %s", hello_packet.c_str());
+
+  // Format 2 (fallback): [type=0x00][session_id] (binary format for older
+  // servers)
   std::string bind_packet;
   bind_packet.push_back(0x00); // Bind packet type
   bind_packet.append(session_id_);

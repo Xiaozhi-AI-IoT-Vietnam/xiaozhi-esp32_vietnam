@@ -36,6 +36,7 @@ public:
     return activation_message_;
   }
   const std::string &GetActivationCode() const { return activation_code_; }
+  int GetActivationTimeoutMs() const { return activation_timeout_ms_; }
   std::string GetCheckVersionUrl();
 
 private:

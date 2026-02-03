@@ -270,6 +270,13 @@ void MqttNotification::HandleMessage(const char *topic, const char *data,
                cJSON_IsString(url) ? url->valuestring : "");
     }
 
+  } else if (strcmp(type_str, "tts") == 0 || strcmp(type_str, "stt") == 0 ||
+             strcmp(type_str, "llm") == 0 || strcmp(type_str, "audio") == 0 ||
+             strcmp(type_str, "goodbye") == 0 || strcmp(type_str, "mcp") == 0 ||
+             strcmp(type_str, "system") == 0 ||
+             strcmp(type_str, "hello") == 0) {
+    // These message types are handled by MqttProtocol, ignore silently
+    ESP_LOGD(TAG, "Ignoring protocol message type: %s", type_str);
   } else {
     ESP_LOGW(TAG, "Unknown MQTT message type: %s", type_str);
   }
@@ -297,18 +304,39 @@ void MqttNotification::ParseNotification(const cJSON *root,
     notification.content = "";
   }
 
+  // Check notification_type field - if "tts", force enable TTS
+  cJSON *notification_type = cJSON_GetObjectItem(root, "notification_type");
+  bool force_tts = false;
+  if (cJSON_IsString(notification_type)) {
+    const char *ntype = notification_type->valuestring;
+    if (strcmp(ntype, "tts") == 0 || strcmp(ntype, "voice") == 0 ||
+        strcmp(ntype, "speak") == 0) {
+      force_tts = true;
+      ESP_LOGI(TAG, "notification_type=%s, forcing TTS enabled", ntype);
+    }
+  }
+
   // useLLM or useTTS flag for TTS playback
   // Server controls this via "Phát âm thanh (TTS)" toggle
   cJSON *useLLM = cJSON_GetObjectItem(root, "useLLM");
   cJSON *useTTS = cJSON_GetObjectItem(root, "useTTS");
 
-  if (cJSON_IsBool(useTTS)) {
+  if (force_tts) {
+    // Force TTS if notification_type indicates voice output
+    notification.useLLM = true;
+  } else if (cJSON_IsBool(useTTS)) {
     notification.useLLM = cJSON_IsTrue(useTTS);
   } else if (cJSON_IsBool(useLLM)) {
     notification.useLLM = cJSON_IsTrue(useLLM);
   } else {
-    notification.useLLM = true; // Default to TTS enabled if not specified
+    // Default: enable TTS for notifications/reminders with content
+    // This ensures voice playback when user expects it
+    notification.useLLM = !notification.content.empty();
   }
+
+  ESP_LOGI(TAG, "ParseNotification: type=%s, force_tts=%d, useLLM=%s",
+           notification.type.c_str(), force_tts,
+           notification.useLLM ? "true" : "false");
 
   // Parse extra data if present
   cJSON *extra = cJSON_GetObjectItem(root, "extra");

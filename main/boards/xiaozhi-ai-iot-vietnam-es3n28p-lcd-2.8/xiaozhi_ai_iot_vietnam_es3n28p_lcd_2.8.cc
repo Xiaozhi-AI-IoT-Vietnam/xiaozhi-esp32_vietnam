@@ -297,9 +297,11 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
                           DISPLAY_WIDTH, DISPLAY_HEIGHT, 
                           DISPLAY_SWAP_XY, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
     
-    touch_->SetInterruptCallback([this]()->bool {
-        return this->WaitForTouchEvent();
-    });
+    // NOTE: Disabled interrupt callback - use polling mode instead
+    // The GPIO interrupt seems unreliable on this board
+    // touch_->SetInterruptCallback([this]()->bool {
+    //     return this->WaitForTouchEvent();
+    // });
 
     touch_->SetGestureCallback([this](TouchGesture gesture, int16_t x, int16_t y) {
       ESP_LOGI(TAG, "Touch gesture detected: %d at (%d, %d)", static_cast<int>(gesture), x, y);
@@ -364,27 +366,48 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
           break;
         case TOUCH_GESTURE_SWIPE_DOWN:
           {
-            auto codec = GetAudioCodec();
-            auto volume = codec->output_volume() - 5;
-            if (volume < 0) {
-              volume = 0;
+            auto& app = Application::GetInstance();
+            if (app.IsIntercomContactsVisible()) {
+              ESP_LOGI(TAG, "Swipe down - move to next contact");
+              app.IntercomContactsMoveDown();
+            } else {
+              auto codec = GetAudioCodec();
+              auto volume = codec->output_volume() - 5;
+              if (volume < 0) {
+                volume = 0;
+              }
+              codec->SetOutputVolume(volume);
+              GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume));
             }
-            codec->SetOutputVolume(volume);
-            GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume));
           }
           break;
         case TOUCH_GESTURE_SWIPE_UP:
           {
-            auto codec = GetAudioCodec();
-            auto volume = codec->output_volume() + 5;
-            if (volume > 100) {
-              volume = 100;
+            auto& app = Application::GetInstance();
+            if (app.IsIntercomContactsVisible()) {
+              ESP_LOGI(TAG, "Swipe up - move to previous contact");
+              app.IntercomContactsMoveUp();
+            } else {
+              auto codec = GetAudioCodec();
+              auto volume = codec->output_volume() + 5;
+              if (volume > 100) {
+                volume = 100;
+              }
+              codec->SetOutputVolume(volume);
+              GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume));
             }
-            codec->SetOutputVolume(volume);
-            GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume));
           }
           break;
         case TOUCH_GESTURE_TAP:
+          {
+            auto& app = Application::GetInstance();
+            bool is_visible = app.IsIntercomContactsVisible();
+            ESP_LOGI(TAG, "TAP: IsIntercomContactsVisible = %d", is_visible);
+            if (is_visible) {
+              ESP_LOGI(TAG, "Tap detected while Intercom UI visible - selecting contact");
+              app.IntercomContactsSelect();
+            }
+          }
           break;
         case TOUCH_GESTURE_DOUBLE_TAP:
           {
@@ -421,18 +444,45 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
 #endif
 
   void InitializeButtons() {
-    boot_button_.OnMultipleClick([this]() {
-        ResetWifiConfiguration();
-    }, 5);
-
+    // Single click: Navigate Intercom if visible, else Toggle Chat
     boot_button_.OnClick([this]() {
       auto &app = Application::GetInstance();
-      if (app.GetDeviceState() == kDeviceStateStarting &&
-          !WifiStation::GetInstance().IsConnected()) {
-        ResetWifiConfiguration();
+      if (app.IsIntercomContactsVisible()) {
+        ESP_LOGI(TAG, "🔘 BOOT click while Intercom - move down");
+        app.IntercomContactsMoveDown();
+      } else {
+        ESP_LOGI(TAG, "🔘 BOOT button SINGLE CLICK detected");
+        if (app.GetDeviceState() == kDeviceStateStarting &&
+            !WifiStation::GetInstance().IsConnected()) {
+          ResetWifiConfiguration();
+        }
+        app.ToggleChatState();
       }
-      app.ToggleChatState();
     });
+
+    // Double click: Select contact if Intercom visible, else Toggle Chat
+    boot_button_.OnDoubleClick([this]() {
+      auto &app = Application::GetInstance();
+      if (app.IsIntercomContactsVisible()) {
+        ESP_LOGI(TAG, "🔘 BOOT double click - SELECT contact");
+        app.IntercomContactsSelect();
+      } else {
+        ESP_LOGI(TAG, "🔘 BOOT button DOUBLE CLICK detected");
+        app.ToggleChatState();
+      }
+    });
+
+    // Long press (2s): Open Intercom Contacts
+    boot_button_.OnLongPress([this]() {
+      ESP_LOGI(TAG, "🔘 BOOT button LONG PRESS detected - calling ShowIntercomContacts()");
+      Application::GetInstance().ShowIntercomContacts();
+    });
+    
+    // 5 clicks: Reset WiFi
+    boot_button_.OnMultipleClick([this]() {
+        ESP_LOGI(TAG, "🔘 BOOT button 5 CLICKS detected - Reset WiFi");
+        ResetWifiConfiguration();
+    }, 5);
   }
 
   void InitializeTools() {
@@ -440,7 +490,8 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
   }
 
  public:
-  XiaozhiAIIoTEs3n28p(): boot_button_(BOOT_BUTTON_GPIO)
+  // Boot button with long_press_time=2000ms for Intercom detection
+  XiaozhiAIIoTEs3n28p(): boot_button_(BOOT_BUTTON_GPIO, false, 2000, 0, false)
   {
     InitializeI2c();
     InitializeSpi();

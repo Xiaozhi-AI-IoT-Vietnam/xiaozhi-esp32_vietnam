@@ -137,6 +137,8 @@ void AfeWakeWord::AudioDetectionTask() {
         StoreWakeWordData(res->data, res->data_size / sizeof(int16_t));
 
         if (res->wakeup_state == WAKENET_DETECTED) {
+            ESP_LOGI(TAG, "*** WAKE WORD DETECTED: %s (model_index=%d) ***", 
+                     wake_words_[res->wakenet_model_index - 1].c_str(), res->wakenet_model_index);
             Stop();
             last_detected_wake_word_ = wake_words_[res->wakenet_model_index - 1];
 

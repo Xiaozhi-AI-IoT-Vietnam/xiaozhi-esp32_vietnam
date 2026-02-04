@@ -25,27 +25,18 @@ LcdTouch::LcdTouch(esp_lcd_touch_handle_t touch_handle, esp_lcd_panel_io_handle_
     ESP_LOGI(TAG, "LcdTouch initialized: %dx%d, swap_xy=%d, mirror_x=%d, mirror_y=%d",
              width_, height_, swap_xy_, mirror_x_, mirror_y_);
 
-#ifdef LVGL_PORT_TOUCH_DRIVER_CALLBACK
+    // Use standard lvgl_port_add_touch for stability
+    ESP_LOGI(TAG, "Adding touch via lvgl_port_add_touch...");
     const lvgl_port_touch_cfg_t touch_cfg = {
       .disp = lv_display_get_default(),
       .handle = touch_handle_,
     };
-    lvgl_port_add_touch(&touch_cfg);
-#else
-    ESP_LOGI(TAG, "Adding custom touch driver to LVGL...");
-    touch_indev_ = lv_indev_create();
-    lv_indev_set_type(touch_indev_, LV_INDEV_TYPE_POINTER);
-    lv_indev_set_driver_data(touch_indev_, touch_handle_);
-    lv_indev_set_user_data(touch_indev_, this);
-#if (0)
-    lv_indev_set_read_cb(touch_indev_, [](lv_indev_t *drv, lv_indev_data_t *data) {
-        LcdTouch* instance = (LcdTouch*)lv_indev_get_user_data(drv);
-        instance->touch_driver_read(drv, data);
-    });
-#else
-    xTaskCreatePinnedToCore(touch_event_task, "touch_task", 3 * 1024, this, 5, NULL, 0);
-#endif
-#endif
+    touch_indev_ = lvgl_port_add_touch(&touch_cfg);
+    if (touch_indev_) {
+        ESP_LOGI(TAG, "Touch added successfully via lvgl_port");
+    } else {
+        ESP_LOGE(TAG, "Failed to add touch via lvgl_port");
+    }
 }
 
 LcdTouch::~LcdTouch() {
@@ -63,10 +54,17 @@ void LcdTouch::touch_event_task(void* arg)
         return;
     }
 
+    ESP_LOGI(TAG, ">>> Touch task STARTED <<<");
     lv_indev_data_t data;
     vTaskDelay(pdMS_TO_TICKS(100)); // Initial delay
+    ESP_LOGI(TAG, ">>> Touch task entering main loop <<<");
+    uint32_t loop_count = 0;
     while (true) {
         touch->touch_driver_read(touch->touch_indev_, &data);
+        loop_count++;
+        if (loop_count <= 5 || loop_count % 100 == 0) {
+            ESP_LOGI(TAG, "Touch task loop %lu", (unsigned long)loop_count);
+        }
     }
 }
 
@@ -81,10 +79,8 @@ void LcdTouch::touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data) {
             data->continue_reading = true;
             return;
         }
-    } else {
-        // No interrupt callback, proceed with polling
-        vTaskDelay(pdMS_TO_TICKS(TOUCH_POLLING_DELAY_MS));
     }
+    // No delay needed - LVGL manages the polling schedule
 
     esp_lcd_touch_handle_t touch_ctx = (esp_lcd_touch_handle_t)lv_indev_get_driver_data(drv);
     esp_err_t err = esp_lcd_touch_read_data(touch_ctx);

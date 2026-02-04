@@ -311,8 +311,24 @@ bool Ota::CheckVersion(std::string &url) {
       }
     }
     has_websocket_config_ = true;
+    
+    // Save access_token from websocket.token for Intercom API
+    cJSON *token = cJSON_GetObjectItem(websocket, "token");
+    if (cJSON_IsString(token) && token->valuestring && strlen(token->valuestring) > 0) {
+      Settings wifi_settings("wifi", true);
+      wifi_settings.SetString("access_token", token->valuestring);
+      ESP_LOGI(TAG, "Saved access_token from websocket.token for Intercom API");
+    }
   } else {
     ESP_LOGI(TAG, "No websocket section found!");
+  }
+  
+  // Also check for top-level access_token (from device activation API)
+  cJSON *access_token = cJSON_GetObjectItem(root, "access_token");
+  if (cJSON_IsString(access_token) && access_token->valuestring && strlen(access_token->valuestring) > 0) {
+    Settings wifi_settings("wifi", true);
+    wifi_settings.SetString("access_token", access_token->valuestring);
+    ESP_LOGI(TAG, "Saved top-level access_token for Intercom API");
   }
 
   has_server_time_ = false;

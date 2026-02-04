@@ -270,6 +270,26 @@ void MqttNotification::HandleMessage(const char *topic, const char *data,
                cJSON_IsString(url) ? url->valuestring : "");
     }
 
+  } else if (strcmp(type_str, "intercom") == 0 ||
+             strcmp(type_str, "intercom_reply") == 0) {
+    // Intercom (Walkie-Talkie) message from another device
+    IntercomData intercom;
+    ParseIntercom(root, intercom);
+
+    OnIntercomCallback callback;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      callback = on_intercom_;
+    }
+
+    if (callback) {
+      ESP_LOGI(TAG, "Dispatching intercom from %s: %s",
+               intercom.from_device_name.c_str(), intercom.message.c_str());
+      callback(intercom);
+    } else {
+      ESP_LOGW(TAG, "No intercom callback registered");
+    }
+
   } else if (strcmp(type_str, "tts") == 0 || strcmp(type_str, "stt") == 0 ||
              strcmp(type_str, "llm") == 0 || strcmp(type_str, "audio") == 0 ||
              strcmp(type_str, "goodbye") == 0 || strcmp(type_str, "mcp") == 0 ||
@@ -347,4 +367,37 @@ void MqttNotification::ParseNotification(const cJSON *root,
       cJSON_free(extra_str);
     }
   }
+}
+
+void MqttNotification::SetOnIntercom(OnIntercomCallback callback) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  on_intercom_ = callback;
+  ESP_LOGI(TAG, "Intercom callback registered");
+}
+
+void MqttNotification::ParseIntercom(const cJSON *root,
+                                     IntercomData &intercom) {
+  cJSON *type = cJSON_GetObjectItem(root, "type");
+  cJSON *from_device_name = cJSON_GetObjectItem(root, "from_device_name");
+  cJSON *from_device_id = cJSON_GetObjectItem(root, "from_device_id");
+  cJSON *message = cJSON_GetObjectItem(root, "message");
+  cJSON *conversation_id = cJSON_GetObjectItem(root, "conversation_id");
+  cJSON *reply_to_mac = cJSON_GetObjectItem(root, "reply_to_mac");
+
+  intercom.type = cJSON_IsString(type) ? type->valuestring : "intercom";
+  intercom.from_device_name = cJSON_IsString(from_device_name)
+                                  ? from_device_name->valuestring
+                                  : "thiết bị khác";
+  intercom.from_device_id =
+      cJSON_IsString(from_device_id) ? from_device_id->valuestring : "";
+  intercom.message = cJSON_IsString(message) ? message->valuestring : "";
+  intercom.conversation_id =
+      cJSON_IsString(conversation_id) ? conversation_id->valuestring : "";
+  intercom.reply_to_mac =
+      cJSON_IsString(reply_to_mac) ? reply_to_mac->valuestring : "";
+  intercom.is_reply = (intercom.type == "intercom_reply");
+
+  ESP_LOGI(TAG, "ParseIntercom: type=%s, from=%s, conversation_id=%s",
+           intercom.type.c_str(), intercom.from_device_name.c_str(),
+           intercom.conversation_id.c_str());
 }

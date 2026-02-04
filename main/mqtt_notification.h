@@ -20,6 +20,19 @@ struct MqttNotificationData {
 };
 
 /**
+ * @brief Intercom message payload structure (Walkie-Talkie feature)
+ */
+struct IntercomData {
+  std::string type;             // "intercom" or "intercom_reply"
+  std::string from_device_name; // Name of sender device (e.g., "phòng khách")
+  std::string from_device_id;   // UUID of sender device
+  std::string message;          // Voice message content
+  std::string conversation_id;  // Conversation ID for reply tracking
+  std::string reply_to_mac;     // MAC address to reply to (only for "intercom")
+  bool is_reply;                // true if this is a reply message
+};
+
+/**
  * @brief MQTT Client for receiving push notifications from server
  *
  * This is a lightweight MQTT client that maintains a persistent connection
@@ -39,6 +52,7 @@ public:
   using OnAssetsUpdateCallback =
       std::function<void(const std::string &version, const std::string &hash,
                          const std::string &url)>;
+  using OnIntercomCallback = std::function<void(const IntercomData &)>;
 
   /**
    * @brief Get singleton instance
@@ -82,6 +96,11 @@ public:
   void SetOnAssetsUpdate(OnAssetsUpdateCallback callback);
 
   /**
+   * @brief Set callback for intercom messages (Walkie-Talkie)
+   */
+  void SetOnIntercom(OnIntercomCallback callback);
+
+  /**
    * @brief Get current connection status string
    */
   std::string GetStatusString() const;
@@ -100,6 +119,7 @@ private:
   // Callbacks
   OnNotificationCallback on_notification_;
   OnAssetsUpdateCallback on_assets_update_;
+  OnIntercomCallback on_intercom_;
 
   // State
   std::string topic_;
@@ -117,4 +137,5 @@ private:
   // Message parser
   void HandleMessage(const char *topic, const char *data, int len);
   void ParseNotification(const cJSON *root, MqttNotificationData &notification);
+  void ParseIntercom(const cJSON *root, IntercomData &intercom);
 };

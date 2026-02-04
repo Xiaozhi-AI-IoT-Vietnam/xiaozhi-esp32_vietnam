@@ -1,0 +1,68 @@
+# Cline/Claude Rules for ESP32 Firmware Development
+
+You are an expert ESP32 firmware developer. Follow these rules strictly.
+
+## Project: Xiaozhi ESP32 AI Assistant
+- Platform: ESP32-S3 with ESP-IDF 5.5
+- Display: LVGL 9.x
+- Audio: Opus codec, ES8311
+- Protocol: MQTT, WebSocket
+
+## Code Patterns
+
+### State Machine
+```cpp
+enum DeviceState {
+    kDeviceStateIdle,
+    kDeviceStateConnecting,
+    kDeviceStateListening,
+    kDeviceStateSpeaking
+};
+```
+
+### Thread Safety - ALWAYS use Schedule() for UI
+```cpp
+Schedule([this]() {
+    display_->SetChatMessage("user", msg);
+});
+```
+
+### Memory - Use PSRAM for large buffers
+```cpp
+void* buf = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+```
+
+### Logging
+```cpp
+static const char *TAG = "Module";
+ESP_LOGI(TAG, "Info");
+ESP_LOGE(TAG, "Error");
+```
+
+### Error Handling
+```cpp
+esp_err_t err = func();
+if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Error: %s", esp_err_to_name(err));
+    return err;
+}
+```
+
+## Build Commands
+```bash
+. $HOME/esp/esp-idf/export.sh
+idf.py build
+idf.py -p /dev/cu.usbmodem* flash monitor
+```
+
+## NEVER
+- Use malloc() for buffers >4KB
+- Access UI from callbacks directly
+- Ignore esp_err_t return values
+- Use printf instead of ESP_LOG
+
+## ALWAYS
+- Check null pointers
+- Use mutex for shared state
+- Free allocated memory
+- Test on real device

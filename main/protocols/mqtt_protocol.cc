@@ -2,6 +2,7 @@
 #include "application.h"
 #include "board.h"
 #include "settings.h"
+#include "system_info.h"
 
 #include "assets/lang_config.h"
 #include <arpa/inet.h>
@@ -68,6 +69,10 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
     }
     return false;
   }
+
+  // Debug log to show topics
+  ESP_LOGI(TAG, "MQTT Settings: endpoint=%s, client_id=%s", endpoint.c_str(), client_id.c_str());
+  ESP_LOGI(TAG, "MQTT Topics: publish=%s, subscribe=%s", publish_topic_.c_str(), subscribe_topic_.c_str());
 
   auto network = Board::GetInstance().GetNetwork();
   mqtt_ = network->CreateMqtt(0);
@@ -222,9 +227,11 @@ bool MqttProtocol::OpenAudioChannel() {
   xEventGroupClearBits(event_group_handle_, MQTT_PROTOCOL_SERVER_HELLO_EVENT);
 
   auto message = GetHelloMessage();
+  ESP_LOGI(TAG, "Sending HELLO to topic [%s]: %s", publish_topic_.c_str(), message.c_str());
   if (!SendText(message)) {
     return false;
   }
+  ESP_LOGI(TAG, "HELLO sent, waiting for server response on topic [%s]...", subscribe_topic_.c_str());
 
   // 等待服务器响应
   EventBits_t bits =
@@ -320,6 +327,12 @@ std::string MqttProtocol::GetHelloMessage() {
   cJSON_AddStringToObject(root, "type", "hello");
   cJSON_AddNumberToObject(root, "version", 3);
   cJSON_AddStringToObject(root, "transport", "udp");
+  
+  // Add MAC address for device identification (critical for multi-device support)
+  auto mac_address = SystemInfo::GetMacAddress();
+  cJSON_AddStringToObject(root, "mac_address", mac_address.c_str());
+  cJSON_AddStringToObject(root, "device_id", mac_address.c_str());
+  
   cJSON *features = cJSON_CreateObject();
 #if CONFIG_USE_SERVER_AEC
   cJSON_AddBoolToObject(features, "aec", true);

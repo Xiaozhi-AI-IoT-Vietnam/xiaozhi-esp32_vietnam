@@ -87,17 +87,55 @@ private:
             ResetWifiConfiguration();
         }, 5);
 
+        // Long press BOOT: Reset WiFi config when starting, otherwise do nothing special
+        boot_button_.OnLongPress([this]() {
+            power_save_timer_->WakeUp();
+            auto& app = Application::GetInstance();
+            
+            // Only reset WiFi if device is in starting state and not connected
+            if (app.GetDeviceState() == kDeviceStateStarting && !WifiStation::GetInstance().IsConnected()) {
+                ESP_LOGI(TAG, "Long press: Triggering WiFi config");
+                ResetWifiConfiguration();
+            }
+        });
+
+        // Single click BOOT: Navigate down in Intercom OR toggle chat
         boot_button_.OnClick([this]() {
             power_save_timer_->WakeUp();
             auto& app = Application::GetInstance();
             if (app.GetDeviceState() == kDeviceStateStarting && !WifiStation::GetInstance().IsConnected()) {
                 ResetWifiConfiguration();
+                return;
             }
-            app.ToggleChatState();
+            
+            if (app.IsIntercomContactsVisible()) {
+                ESP_LOGI(TAG, "Single click: Moving to next contact");
+                app.IntercomContactsMoveDown();
+            } else {
+                app.ToggleChatState();
+            }
+        });
+        
+        // Double click BOOT: Select contact in Intercom OR toggle chat
+        boot_button_.OnDoubleClick([this]() {
+            power_save_timer_->WakeUp();
+            auto& app = Application::GetInstance();
+            if (app.IsIntercomContactsVisible()) {
+                ESP_LOGI(TAG, "Double click: Selecting contact");
+                app.IntercomContactsSelect();
+            } else {
+                app.ToggleChatState();
+            }
         });
 
         volume_up_button_.OnClick([this]() {
             power_save_timer_->WakeUp();
+            auto& app = Application::GetInstance();
+            // Volume UP can also navigate up in Intercom
+            if (app.IsIntercomContactsVisible()) {
+                app.IntercomContactsMoveUp();
+                return;
+            }
             auto codec = GetAudioCodec();
             auto volume = codec->output_volume() + 10;
             if (volume > 100) {
@@ -107,14 +145,35 @@ private:
             GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume));
         });
 
+        // Long press Volume UP: Set max volume
         volume_up_button_.OnLongPress([this]() {
             power_save_timer_->WakeUp();
             GetAudioCodec()->SetOutputVolume(100);
             GetDisplay()->ShowNotification(Lang::Strings::MAX_VOLUME);
         });
+        
+        // Double click Volume UP: Open Intercom contacts
+        volume_up_button_.OnDoubleClick([this]() {
+            power_save_timer_->WakeUp();
+            auto& app = Application::GetInstance();
+            
+            // Don't open Intercom if device is starting
+            if (app.GetDeviceState() == kDeviceStateStarting) {
+                return;
+            }
+            
+            ESP_LOGI(TAG, "Volume UP double click: Opening Intercom contacts");
+            app.ShowIntercomContacts();
+        });
 
         volume_down_button_.OnClick([this]() {
             power_save_timer_->WakeUp();
+            auto& app = Application::GetInstance();
+            // Volume DOWN can also navigate down in Intercom
+            if (app.IsIntercomContactsVisible()) {
+                app.IntercomContactsMoveDown();
+                return;
+            }
             auto codec = GetAudioCodec();
             auto volume = codec->output_volume() - 10;
             if (volume < 0) {
@@ -126,6 +185,12 @@ private:
 
         volume_down_button_.OnLongPress([this]() {
             power_save_timer_->WakeUp();
+            auto& app = Application::GetInstance();
+            // Long press volume down: Cancel/hide Intercom
+            if (app.IsIntercomContactsVisible()) {
+                app.HideIntercomContacts();
+                return;
+            }
             GetAudioCodec()->SetOutputVolume(0);
             GetDisplay()->ShowNotification(Lang::Strings::MUTED);
         });
@@ -160,6 +225,7 @@ private:
     }
 
 public:
+    // Default button constructors
     XINGZHI_CUBE_1_54TFT_WIFI() :
         boot_button_(BOOT_BUTTON_GPIO),
         volume_up_button_(VOLUME_UP_BUTTON_GPIO),

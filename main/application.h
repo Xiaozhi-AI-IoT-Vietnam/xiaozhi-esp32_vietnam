@@ -29,6 +29,10 @@
 #include "features/weather/weather_service.h"
 // ---------------------
 
+// --- Intercom Contacts UI ---
+#include "display/intercom_contacts_ui.h"
+// ----------------------------
+
 #define MAIN_EVENT_SCHEDULE (1 << 0)
 #define MAIN_EVENT_SEND_AUDIO (1 << 1)
 #define MAIN_EVENT_WAKE_WORD_DETECTED (1 << 2)
@@ -80,6 +84,14 @@ public:
   Esp32Music *GetMusic() { return music_; }
   Esp32Radio *GetRadio() { return radio_; }
   Esp32SdMusic *GetSdMusic() { return sd_music_; }
+  
+  // Intercom Contacts feature (double-press button)
+  void ShowIntercomContacts();
+  void HideIntercomContacts();
+  bool IsIntercomContactsVisible() const { return intercom_contacts_ui_.IsVisible(); }
+  void IntercomContactsMoveUp() { intercom_contacts_ui_.MoveUp(); }
+  void IntercomContactsMoveDown() { intercom_contacts_ui_.MoveDown(); }
+  void IntercomContactsSelect() { intercom_contacts_ui_.Select(); }
 
 private:
   Application();
@@ -105,6 +117,11 @@ private:
   TaskHandle_t check_new_version_task_handle_ = nullptr;
   TaskHandle_t main_event_loop_task_handle_ = nullptr;
 
+  // Intercom Contacts UI
+  IntercomContactsUI intercom_contacts_ui_;
+  void InitIntercomContactsUI();
+  void OnIntercomContactSelected(const IntercomContact& contact);
+
   void OnWakeWordDetected();
   void CheckNewVersion(Ota &ota);
   void CheckAssetsVersion();
@@ -116,6 +133,21 @@ private:
   void InitializeMqttNotifications();
   void OnMqttNotification(const MqttNotificationData &notification);
   void OnPushNotification(const std::string &title, const std::string &content);
+
+  // Intercom (Walkie-Talkie) feature
+  struct IntercomContext {
+    bool active = false;
+    std::string conversation_id;
+    std::string reply_to_mac;
+    std::string from_name;
+    uint32_t last_activity_ms = 0;
+  };
+  IntercomContext intercom_context_;
+  void OnIntercom(const IntercomData &intercom);
+  void HandleIntercomMessage(const IntercomData &intercom);
+  void HandleIntercomReply(const IntercomData &intercom);
+  void StartIntercomListen();
+  void EndIntercomSession(const std::string &reason = "timeout");
 #endif
 
 #ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE

@@ -22,6 +22,7 @@
 #include <esp_log.h>
 #include <font_awesome.h>
 #include <qrcode.h>
+#include <model_path.h>
 #define TAG "Application"
 
 static const char *const STATE_STRINGS[] = {
@@ -264,6 +265,12 @@ void Application::DismissAlert() {
 }
 
 void Application::ToggleChatState() {
+  // Block AI chat when Intercom list is visible
+  if (IsIntercomContactsVisible()) {
+    ESP_LOGI(TAG, "Intercom UI is visible - ignoring chat toggle");
+    return;
+  }
+  
   if (device_state_ == kDeviceStateActivating) {
     SetDeviceState(kDeviceStateIdle);
     return;
@@ -306,6 +313,206 @@ void Application::ToggleChatState() {
     });
   }
 }
+
+void Application::ShowIntercomContacts() {
+  ESP_LOGI(TAG, "📞 Opening Intercom Contacts");
+  
+  // Show UI immediately with loading state
+  Schedule([this]() {
+    ESP_LOGI(TAG, "📞 Schedule: Creating Intercom UI");
+    
+    // Initialize UI callbacks if not done
+    InitIntercomContactsUI();
+    
+    // Show loading state with demo contact
+    std::vector<IntercomContact> loading_contacts;
+    IntercomContact loading;
+    loading.id = "0";
+    loading.name = "Đang tải...";
+    loading.mac = "";
+    loading.owner = "";
+    loading.is_online = false;
+    loading.is_own_device = false;
+    loading_contacts.push_back(loading);
+    
+    intercom_contacts_ui_.SetContacts(loading_contacts);
+    intercom_contacts_ui_.Show();
+    
+    ESP_LOGI(TAG, "📞 Intercom UI shown with loading state");
+  });
+  
+  // Fetch contacts in background task with larger stack
+  xTaskCreate([](void* param) {
+    Application* app = static_cast<Application*>(param);
+    
+    std::vector<IntercomContact> contacts;
+    
+    ESP_LOGI("Intercom", "📞 Background task started");
+    
+    if (!WifiStation::GetInstance().IsConnected()) {
+      ESP_LOGW("Intercom", "📞 WiFi not connected!");
+    } else {
+      ESP_LOGI("Intercom", "📞 WiFi connected, checking token...");
+      Settings settings("wifi", false);
+      std::string token = settings.GetString("access_token", "");
+      
+      if (token.empty()) {
+        ESP_LOGW("Intercom", "📞 No access_token found in NVS!");
+      } else {
+        ESP_LOGI("Intercom", "📞 Token found (len=%d)", (int)token.length());
+        auto& board = Board::GetInstance();
+        auto network = board.GetNetwork();
+        auto http = network->CreateHttp(10000);
+        
+        std::string mac = SystemInfo::GetMacAddress();
+        std::string url = "https://xiaozhi-ai-iot.vn/api/v1/firmware-device/intercom-contacts";
+        
+        http->SetHeader("Content-Type", "application/json");
+        http->SetHeader("device-id", mac.c_str());
+        http->SetHeader("Authorization", std::string("Bearer ") + token);
+        
+        ESP_LOGI("Intercom", "📞 GET %s", url.c_str());
+        ESP_LOGI("Intercom", "📞 device-id: %s", mac.c_str());
+        
+        if (!http->Open("GET", url)) {
+          ESP_LOGE("Intercom", "📞 Failed to open HTTP connection!");
+        } else {
+          int status_code = http->GetStatusCode();
+          ESP_LOGI("Intercom", "📞 API Status: %d", status_code);
+          
+          if (status_code == 200) {
+            std::string body = http->ReadAll();
+            ESP_LOGI("Intercom", "📞 Response: %.200s", body.c_str());
+            
+            cJSON* root = cJSON_Parse(body.c_str());
+            if (root) {
+              cJSON* contacts_arr = cJSON_GetObjectItem(root, "contacts");
+              if (cJSON_IsArray(contacts_arr)) {
+                int count = cJSON_GetArraySize(contacts_arr);
+                for (int i = 0; i < count; i++) {
+                  cJSON* item = cJSON_GetArrayItem(contacts_arr, i);
+                  
+                  IntercomContact c;
+                  cJSON* id = cJSON_GetObjectItem(item, "id");
+                  cJSON* name = cJSON_GetObjectItem(item, "name");
+                  cJSON* contact_mac = cJSON_GetObjectItem(item, "mac");
+                  cJSON* owner = cJSON_GetObjectItem(item, "owner");
+                  cJSON* type = cJSON_GetObjectItem(item, "type");
+                  cJSON* status = cJSON_GetObjectItem(item, "status");
+                  
+                  if (cJSON_IsString(id)) c.id = id->valuestring;
+                  if (cJSON_IsString(name)) c.name = name->valuestring;
+                  if (cJSON_IsString(contact_mac)) c.mac = contact_mac->valuestring;
+                  if (cJSON_IsString(owner)) c.owner = owner->valuestring;
+                  if (cJSON_IsString(type)) c.is_own_device = (strcmp(type->valuestring, "own") == 0);
+                  if (cJSON_IsString(status)) c.is_online = (strcmp(status->valuestring, "online") == 0);
+                  
+                  contacts.push_back(c);
+                  ESP_LOGI("Intercom", "📞 Contact: %s (%s)", c.name.c_str(), c.mac.c_str());
+                }
+              }
+              cJSON_Delete(root);
+            }
+          }
+          http->Close();
+        }
+      }
+    }
+    
+    // If no contacts fetched, use demo
+    if (contacts.empty()) {
+      ESP_LOGI("Intercom", "📞 No contacts from server, using demo");
+      IntercomContact c1;
+      c1.id = "1";
+      c1.name = "Demo - LCD 2.8";
+      c1.mac = "00:00:00:00:00:01";
+      c1.owner = "Demo";
+      c1.is_online = false;
+      c1.is_own_device = true;
+      contacts.push_back(c1);
+    }
+    
+    // Update UI on main thread
+    auto contacts_copy = new std::vector<IntercomContact>(std::move(contacts));
+    app->Schedule([app, contacts_copy]() {
+      // Always update UI - don't check visibility since task may finish before UI is shown
+      app->intercom_contacts_ui_.SetContacts(*contacts_copy);
+      ESP_LOGI("Intercom", "📞 Updated UI with %d contacts", (int)contacts_copy->size());
+      delete contacts_copy;
+    });
+    
+    vTaskDelete(NULL);
+  }, "intercom_fetch", 8192, this, 5, NULL);  // 8KB stack
+}
+
+void Application::HideIntercomContacts() {
+  intercom_contacts_ui_.Hide();
+}
+
+void Application::InitIntercomContactsUI() {
+  static bool initialized = false;
+  if (initialized) return;
+  initialized = true;
+  
+  // Set up callbacks
+  intercom_contacts_ui_.OnContactSelected([this](const IntercomContact& contact) {
+    OnIntercomContactSelected(contact);
+  });
+  
+  intercom_contacts_ui_.OnCancel([this]() {
+    ESP_LOGI(TAG, "Intercom contacts cancelled");
+  });
+}
+
+void Application::OnIntercomContactSelected(const IntercomContact& contact) {
+  ESP_LOGI(TAG, "📞 Selected contact: %s (MAC: %s)", contact.name.c_str(), contact.mac.c_str());
+  
+  // Hide Intercom UI first so it doesn't block voice
+  intercom_contacts_ui_.Hide();
+  
+  // Show notification
+  auto display = Board::GetInstance().GetDisplay();
+  if (display) {
+    std::string msg = "📞 Đang gọi " + contact.name + "...";
+    display->ShowNotification(msg.c_str(), 3000);
+  }
+  
+  // Send intercom message via MQTT
+  // Similar to existing voice-triggered intercom
+  if (protocol_) {
+    Schedule([this, contact]() {
+      if (!protocol_->IsAudioChannelOpened()) {
+        SetDeviceState(kDeviceStateConnecting);
+        if (!protocol_->OpenAudioChannel()) {
+          return;
+        }
+      }
+      
+      // Send MCP message to initiate intercom
+      cJSON *root = cJSON_CreateObject();
+      cJSON_AddStringToObject(root, "type", "intercom");
+      cJSON_AddStringToObject(root, "action", "call");
+      cJSON_AddStringToObject(root, "target_mac", contact.mac.c_str());
+      cJSON_AddStringToObject(root, "target_name", contact.name.c_str());
+      
+      char *json_str = cJSON_PrintUnformatted(root);
+      if (json_str) {
+        ESP_LOGI(TAG, "Sending intercom call: %s", json_str);
+        SendMcpMessage(json_str);
+        free(json_str);
+      }
+      cJSON_Delete(root);
+      
+      // Start listening mode for voice message
+      auto display = Board::GetInstance().GetDisplay();
+      if (display) {
+        display->SetChatMessage("system", ("Nói tin nhắn cho " + contact.name + "...").c_str());
+      }
+      SetListeningMode(kListeningModeAutoStop);
+    });
+  }
+}
+
 
 void Application::StartListening() {
   if (device_state_ == kDeviceStateActivating) {
@@ -403,7 +610,16 @@ void Application::Start() {
   auto codec = board.GetAudioCodec();
   audio_service_.Initialize(codec);
   audio_service_.Start();
-  // codec->SetOutputVolume(10);
+  
+  // Load wake word models from srmodels partition
+  // This is needed when assets partition is disabled
+  srmodel_list_t* models = esp_srmodel_init("model");
+  if (models != nullptr) {
+    audio_service_.SetModelsList(models);
+    ESP_LOGI(TAG, "Wake word models loaded from srmodels partition");
+  } else {
+    ESP_LOGW(TAG, "No wake word models found - barge-in disabled");
+  }
 
   AudioServiceCallbacks callbacks;
   callbacks.on_send_queue_available = [this]() {
@@ -777,6 +993,12 @@ void Application::OnWakeWordDetected() {
   if (!protocol_) {
     return;
   }
+  
+  // Block wake word when Intercom UI is visible
+  if (IsIntercomContactsVisible()) {
+    ESP_LOGI(TAG, "Wake word ignored - Intercom UI is visible");
+    return;
+  }
 
   if (device_state_ == kDeviceStateIdle) {
     audio_service_.EncodeWakeWord();
@@ -905,11 +1127,14 @@ void Application::SetDeviceState(DeviceState state) {
   case kDeviceStateSpeaking:
     display->SetStatus(Lang::Strings::SPEAKING);
 
+    // With AEC enabled, keep voice processing active for barge-in detection
     if (listening_mode_ != kListeningModeRealtime) {
       audio_service_.EnableVoiceProcessing(false);
-      // Only AFE wake word can be detected in speaking mode
-      audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
     }
+    // Always enable wake word detection in speaking mode for barge-in
+    // AEC in wake word detector allows detecting wake word even while speaker is playing
+    ESP_LOGI(TAG, "Speaking mode: enabling wake word detection for barge-in");
+    audio_service_.EnableWakeWordDetection(true);
     audio_service_.ResetDecoder();
     break;
   default:
@@ -1317,6 +1542,18 @@ void Application::InitializeMqttNotifications() {
     // TODO: Handle assets update (trigger OTA assets download)
   });
 
+  // Set up intercom (Walkie-Talkie) callback
+  mqtt.SetOnIntercom([this](const IntercomData &intercom) {
+    ESP_LOGI(TAG, "Received intercom: from=%s, is_reply=%d",
+             intercom.from_device_name.c_str(), intercom.is_reply);
+
+    // Capture a copy for the scheduled callback
+    IntercomData intercom_copy = intercom;
+
+    // Schedule on main thread
+    Schedule([this, intercom_copy]() { OnIntercom(intercom_copy); });
+  });
+
   // Start MQTT client
   mqtt.Start(endpoint, mac, username, password);
 
@@ -1457,5 +1694,202 @@ void Application::OnPushNotification(const std::string &title,
   display->ShowNotification(message.c_str());
 
   ESP_LOGI(TAG, "Push notification displayed: %s", message.c_str());
+}
+
+/**
+ * @brief Handle incoming intercom message (Walkie-Talkie)
+ * @param intercom The intercom payload
+ */
+void Application::OnIntercom(const IntercomData &intercom) {
+  ESP_LOGI(TAG, "[INTERCOM] OnIntercom: type=%s, from=%s, msg=%s",
+           intercom.type.c_str(), intercom.from_device_name.c_str(),
+           intercom.message.c_str());
+
+  if (intercom.is_reply) {
+    HandleIntercomReply(intercom);
+  } else {
+    HandleIntercomMessage(intercom);
+  }
+}
+
+/**
+ * @brief Handle incoming intercom message (someone calling this device)
+ */
+void Application::HandleIntercomMessage(const IntercomData &intercom) {
+  auto display = Board::GetInstance().GetDisplay();
+
+  // Store conversation context for reply
+  intercom_context_.active = true;
+  intercom_context_.conversation_id = intercom.conversation_id;
+  intercom_context_.reply_to_mac = intercom.reply_to_mac;
+  intercom_context_.from_name = intercom.from_device_name;
+  intercom_context_.last_activity_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+  // Build TTS message: "Tin nhắn từ [device]: [message]"
+  std::string tts_content =
+      "Tin nhắn từ " + intercom.from_device_name + ": " + intercom.message;
+
+  // Display on screen
+  display->ShowNotification(("📞 " + intercom.from_device_name).c_str());
+  display->SetChatMessage("assistant", tts_content.c_str());
+
+  ESP_LOGI(TAG, "[INTERCOM] Message from %s: %s",
+           intercom.from_device_name.c_str(), intercom.message.c_str());
+
+  // Play TTS and then auto-listen for reply
+  Schedule([this, tts_content]() {
+    // Check if audio channel is open
+    if (protocol_->IsAudioChannelOpened()) {
+      // Channel already open - send notification_speak
+      cJSON *msg = cJSON_CreateObject();
+      cJSON_AddStringToObject(msg, "type", "notification_speak");
+      cJSON_AddStringToObject(msg, "content", tts_content.c_str());
+      cJSON_AddBoolToObject(msg, "intercom", true); // Mark as intercom
+      char *json = cJSON_PrintUnformatted(msg);
+
+      ESP_LOGI(TAG, "[INTERCOM] Sending TTS: %s", json);
+      protocol_->SendMcpMessage(json);
+
+      cJSON_free(json);
+      cJSON_Delete(msg);
+      return;
+    }
+
+    // Need to open channel first
+    if (device_state_ != kDeviceStateIdle) {
+      ESP_LOGW(TAG, "[INTERCOM] Device busy, playing notification sound");
+      audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
+      return;
+    }
+
+    SetDeviceState(kDeviceStateConnecting);
+
+    ESP_LOGI(TAG, "[INTERCOM] Opening audio channel for TTS...");
+    if (!protocol_->OpenAudioChannel()) {
+      ESP_LOGE(TAG, "[INTERCOM] Failed to open audio channel");
+      audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
+      SetDeviceState(kDeviceStateIdle);
+      return;
+    }
+
+    // Send notification_speak with intercom flag
+    cJSON *msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(msg, "type", "notification_speak");
+    cJSON_AddStringToObject(msg, "content", tts_content.c_str());
+    cJSON_AddBoolToObject(msg, "intercom", true);
+    cJSON_AddStringToObject(msg, "conversation_id",
+                            intercom_context_.conversation_id.c_str());
+    char *json = cJSON_PrintUnformatted(msg);
+
+    ESP_LOGI(TAG, "[INTERCOM] Sending TTS: %s", json);
+    protocol_->SendMcpMessage(json);
+
+    cJSON_free(json);
+    cJSON_Delete(msg);
+
+    // Set listening mode - will auto-listen after TTS finishes
+    listening_mode_ = kListeningModeManualStop;
+    ESP_LOGI(TAG, "[INTERCOM] Waiting for TTS, will auto-listen after");
+  });
+}
+
+/**
+ * @brief Handle incoming intercom reply (response from another device)
+ */
+void Application::HandleIntercomReply(const IntercomData &intercom) {
+  auto display = Board::GetInstance().GetDisplay();
+
+  // Update context activity
+  intercom_context_.last_activity_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+  // Build TTS message: "Phản hồi từ [device]: [message]"
+  std::string tts_content =
+      "Phản hồi từ " + intercom.from_device_name + ": " + intercom.message;
+
+  // Display on screen
+  display->SetChatMessage("assistant", tts_content.c_str());
+
+  ESP_LOGI(TAG, "[INTERCOM] Reply from %s: %s",
+           intercom.from_device_name.c_str(), intercom.message.c_str());
+
+  // Play TTS (similar flow to HandleIntercomMessage)
+  Schedule([this, tts_content]() {
+    if (protocol_->IsAudioChannelOpened()) {
+      cJSON *msg = cJSON_CreateObject();
+      cJSON_AddStringToObject(msg, "type", "notification_speak");
+      cJSON_AddStringToObject(msg, "content", tts_content.c_str());
+      cJSON_AddBoolToObject(msg, "intercom", true);
+      char *json = cJSON_PrintUnformatted(msg);
+
+      protocol_->SendMcpMessage(json);
+
+      cJSON_free(json);
+      cJSON_Delete(msg);
+      return;
+    }
+
+    if (device_state_ != kDeviceStateIdle) {
+      audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
+      return;
+    }
+
+    SetDeviceState(kDeviceStateConnecting);
+
+    if (!protocol_->OpenAudioChannel()) {
+      audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
+      SetDeviceState(kDeviceStateIdle);
+      return;
+    }
+
+    cJSON *msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(msg, "type", "notification_speak");
+    cJSON_AddStringToObject(msg, "content", tts_content.c_str());
+    cJSON_AddBoolToObject(msg, "intercom", true);
+    char *json = cJSON_PrintUnformatted(msg);
+
+    protocol_->SendMcpMessage(json);
+
+    cJSON_free(json);
+    cJSON_Delete(msg);
+
+    listening_mode_ = kListeningModeManualStop;
+  });
+}
+
+/**
+ * @brief Start listening for intercom reply (called after TTS finishes)
+ */
+void Application::StartIntercomListen() {
+  if (!intercom_context_.active) {
+    ESP_LOGW(TAG,
+             "[INTERCOM] StartIntercomListen called but no active context");
+    return;
+  }
+
+  ESP_LOGI(TAG, "[INTERCOM] Auto-listen started, waiting for user reply...");
+
+  // Start listening mode
+  Schedule([this]() {
+    if (device_state_ == kDeviceStateSpeaking) {
+      // Already handling TTS, listening will start after
+      listening_mode_ = kListeningModeAutoStop;
+    } else if (device_state_ == kDeviceStateIdle) {
+      // Start listening
+      StartListening();
+    }
+  });
+}
+
+/**
+ * @brief End intercom session
+ */
+void Application::EndIntercomSession(const std::string &reason) {
+  ESP_LOGI(TAG, "[INTERCOM] Session ended: %s", reason.c_str());
+
+  intercom_context_.active = false;
+  intercom_context_.conversation_id.clear();
+  intercom_context_.reply_to_mac.clear();
+  intercom_context_.from_name.clear();
+  intercom_context_.last_activity_ms = 0;
 }
 #endif

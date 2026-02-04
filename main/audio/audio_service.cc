@@ -231,6 +231,11 @@ void AudioService::AudioInputTask() {
             int samples = wake_word_->GetFeedSize();
             if (samples > 0) {
                 if (ReadAudioData(data, 16000, samples)) {
+                    static int ww_feed_count = 0;
+                    if (++ww_feed_count % 100 == 0) {
+                        ESP_LOGI(TAG, "Wake word fed %d times, samples=%d, channels=%d", 
+                                 ww_feed_count, samples, codec_->input_channels());
+                    }
                     wake_word_->Feed(data);
                     continue;
                 }
@@ -241,11 +246,19 @@ void AudioService::AudioInputTask() {
         if (bits & AS_EVENT_AUDIO_PROCESSOR_RUNNING) {
             std::vector<int16_t> data;
             int samples = audio_processor_->GetFeedSize();
+            static int ap_feed_count = 0;
+            if (++ap_feed_count % 100 == 0) {
+                ESP_LOGI(TAG, "Audio processor fed %d times, samples=%d", ap_feed_count, samples);
+            }
             if (samples > 0) {
                 if (ReadAudioData(data, 16000, samples)) {
                     audio_processor_->Feed(std::move(data));
                     continue;
                 }
+            } else {
+                ESP_LOGE(TAG, "Audio processor GetFeedSize returned 0!");
+                vTaskDelay(pdMS_TO_TICKS(100));  // Avoid busy loop
+                continue;
             }
         }
 
@@ -457,7 +470,7 @@ void AudioService::EnableWakeWordDetection(bool enable) {
         return;
     }
 
-    ESP_LOGD(TAG, "%s wake word detection", enable ? "Enabling" : "Disabling");
+    ESP_LOGI(TAG, "%s wake word detection (wake_word_initialized=%d)", enable ? "Enabling" : "Disabling", wake_word_initialized_);
     if (enable) {
         if (!wake_word_initialized_) {
             if (!wake_word_->Initialize(codec_, models_list_)) {
@@ -475,7 +488,7 @@ void AudioService::EnableWakeWordDetection(bool enable) {
 }
 
 void AudioService::EnableVoiceProcessing(bool enable) {
-    ESP_LOGD(TAG, "%s voice processing", enable ? "Enabling" : "Disabling");
+    ESP_LOGI(TAG, "%s voice processing", enable ? "Enabling" : "Disabling");
     if (enable) {
         if (!audio_processor_initialized_) {
             audio_processor_->Initialize(codec_, OPUS_FRAME_DURATION_MS, models_list_);
@@ -653,10 +666,13 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
     models_list_ = models_list;
 
 #if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
-    if (esp_srmodel_filter(models_list_, ESP_MN_PREFIX, NULL) != nullptr) {
-        wake_word_ = std::make_unique<CustomWakeWord>();
-    } else if (esp_srmodel_filter(models_list_, ESP_WN_PREFIX, NULL) != nullptr) {
+    // Prioritize AfeWakeWord (with AEC support) for better barge-in during TTS playback
+    if (esp_srmodel_filter(models_list_, ESP_WN_PREFIX, NULL) != nullptr) {
         wake_word_ = std::make_unique<AfeWakeWord>();
+        ESP_LOGI(TAG, "Using AfeWakeWord with AEC support for barge-in");
+    } else if (esp_srmodel_filter(models_list_, ESP_MN_PREFIX, NULL) != nullptr) {
+        wake_word_ = std::make_unique<CustomWakeWord>();
+        ESP_LOGW(TAG, "Using CustomWakeWord without AEC - barge-in may not work during TTS");
     } else {
         wake_word_ = nullptr;
     }

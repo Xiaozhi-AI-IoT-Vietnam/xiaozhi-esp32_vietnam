@@ -32,7 +32,12 @@ void IntercomContactsUI::MoveUp() {
     ESP_LOGI(TAG, "Move up: selected=%d/%d", selected_index_, (int)contacts_.size());
     
 #ifdef HAVE_LVGL
+    auto display = Board::GetInstance().GetDisplay();
+    DisplayLockGuard lock(display);
     UpdateSelection();
+    if (list_) {
+        lv_obj_invalidate(list_);
+    }
 #endif
 }
 
@@ -46,7 +51,12 @@ void IntercomContactsUI::MoveDown() {
     ESP_LOGI(TAG, "Move down: selected=%d/%d", selected_index_, (int)contacts_.size());
     
 #ifdef HAVE_LVGL
+    auto display = Board::GetInstance().GetDisplay();
+    DisplayLockGuard lock(display);
     UpdateSelection();
+    if (list_) {
+        lv_obj_invalidate(list_);
+    }
 #endif
 }
 
@@ -224,6 +234,11 @@ void IntercomContactsUI::UpdateSelection() {
         bool is_selected = (i == (size_t)selected_index_);
         lv_obj_set_style_bg_color(list_items_[i], 
             is_selected ? lv_color_hex(0x4a69bd) : lv_color_hex(0x3d4f5f), 0);
+    }
+    
+    // Scroll to make selected item visible
+    if (selected_index_ >= 0 && selected_index_ < (int)list_items_.size()) {
+        lv_obj_scroll_to_view(list_items_[selected_index_], LV_ANIM_ON);
     }
 }
 

@@ -464,8 +464,11 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
     boot_button_.OnDoubleClick([this]() {
       auto &app = Application::GetInstance();
       if (app.IsIntercomContactsVisible()) {
-        ESP_LOGI(TAG, "🔘 BOOT double click - SELECT contact");
-        app.IntercomContactsSelect();
+        ESP_LOGI(TAG, "🔘 BOOT double click - Scheduling SELECT contact");
+        // Must schedule to main thread to avoid LVGL crash
+        app.Schedule([&app]() {
+          app.IntercomContactsSelect();
+        });
       } else {
         ESP_LOGI(TAG, "🔘 BOOT button DOUBLE CLICK detected");
         app.ToggleChatState();

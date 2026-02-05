@@ -241,7 +241,10 @@ private:
       power_save_timer_->WakeUp();
       auto &app = Application::GetInstance();
       if (app.IsIntercomContactsVisible()) {
-        app.IntercomContactsSelect();
+        // Must schedule to main thread to avoid LVGL crash
+        app.Schedule([&app]() {
+          app.IntercomContactsSelect();
+        });
       }
     });
 
@@ -284,7 +287,10 @@ private:
       power_save_timer_->WakeUp();
       auto &app = Application::GetInstance();
       if (app.IsIntercomContactsVisible()) {
-        app.IntercomContactsSelect();
+        // Must schedule to main thread to avoid LVGL crash
+        app.Schedule([&app]() {
+          app.IntercomContactsSelect();
+        });
       }
     });
 

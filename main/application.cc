@@ -365,7 +365,7 @@ void Application::ShowIntercomContacts() {
         auto http = network->CreateHttp(10000);
         
         std::string mac = SystemInfo::GetMacAddress();
-        std::string url = "https://xiaozhi-ai-iot.vn/api/v1/firmware-device/intercom-contacts";
+        std::string url = "https://xiaozhi-ai-iot.vn/api/v1/device/intercom-contacts";
         
         http->SetHeader("Content-Type", "application/json");
         http->SetHeader("device-id", mac.c_str());
@@ -465,52 +465,23 @@ void Application::InitIntercomContactsUI() {
 }
 
 void Application::OnIntercomContactSelected(const IntercomContact& contact) {
-  ESP_LOGI(TAG, "📞 Selected contact: %s (MAC: %s)", contact.name.c_str(), contact.mac.c_str());
-  
-  // Hide Intercom UI first so it doesn't block voice
-  intercom_contacts_ui_.Hide();
-  
-  // Show notification
-  auto display = Board::GetInstance().GetDisplay();
-  if (display) {
-    std::string msg = "📞 Đang gọi " + contact.name + "...";
-    display->ShowNotification(msg.c_str(), 3000);
-  }
-  
-  // Send intercom message via MQTT
-  // Similar to existing voice-triggered intercom
-  if (protocol_) {
-    Schedule([this, contact]() {
-      if (!protocol_->IsAudioChannelOpened()) {
-        SetDeviceState(kDeviceStateConnecting);
-        if (!protocol_->OpenAudioChannel()) {
-          return;
-        }
-      }
-      
-      // Send MCP message to initiate intercom
-      cJSON *root = cJSON_CreateObject();
-      cJSON_AddStringToObject(root, "type", "intercom");
-      cJSON_AddStringToObject(root, "action", "call");
-      cJSON_AddStringToObject(root, "target_mac", contact.mac.c_str());
-      cJSON_AddStringToObject(root, "target_name", contact.name.c_str());
-      
-      char *json_str = cJSON_PrintUnformatted(root);
-      if (json_str) {
-        ESP_LOGI(TAG, "Sending intercom call: %s", json_str);
-        SendMcpMessage(json_str);
-        free(json_str);
-      }
-      cJSON_Delete(root);
-      
-      // Start listening mode for voice message
-      auto display = Board::GetInstance().GetDisplay();
-      if (display) {
-        display->SetChatMessage("system", ("Nói tin nhắn cho " + contact.name + "...").c_str());
-      }
-      SetListeningMode(kListeningModeAutoStop);
-    });
-  }
+  // Must schedule to main thread - button callback runs on different thread!
+  Schedule([this, contact_name = contact.name, contact_mac = contact.mac]() {
+    ESP_LOGI(TAG, "📞 Selected contact: %s (MAC: %s)", contact_name.c_str(), contact_mac.c_str());
+    
+    // Hide Intercom UI (safe on main thread)
+    intercom_contacts_ui_.Hide();
+    
+    // Show simple notification
+    auto display = Board::GetInstance().GetDisplay();
+    if (display) {
+      display->ShowNotification("Đang gọi...", 2000);
+    }
+    
+    ESP_LOGI(TAG, "📞 Intercom call to: %s (%s)", contact_name.c_str(), contact_mac.c_str());
+    
+    // TODO: Implement actual intercom call via MQTT/UDP
+  });
 }
 
 

@@ -99,7 +99,7 @@ private:
             }
         });
 
-        // Single click BOOT: Navigate down in Intercom OR toggle chat
+        // Single click BOOT: Select contact in Intercom OR toggle chat
         boot_button_.OnClick([this]() {
             power_save_timer_->WakeUp();
             auto& app = Application::GetInstance();
@@ -109,8 +109,11 @@ private:
             }
             
             if (app.IsIntercomContactsVisible()) {
-                ESP_LOGI(TAG, "Single click: Moving to next contact");
-                app.IntercomContactsMoveDown();
+                ESP_LOGI(TAG, "BOOT click: Scheduling contact selection");
+                // Must schedule to main thread to avoid LVGL crash
+                app.Schedule([&app]() {
+                    app.IntercomContactsSelect();
+                });
             } else {
                 app.ToggleChatState();
             }
@@ -121,8 +124,11 @@ private:
             power_save_timer_->WakeUp();
             auto& app = Application::GetInstance();
             if (app.IsIntercomContactsVisible()) {
-                ESP_LOGI(TAG, "Double click: Selecting contact");
-                app.IntercomContactsSelect();
+                ESP_LOGI(TAG, "Double click: Scheduling contact selection");
+                // Must schedule to main thread to avoid LVGL crash
+                app.Schedule([&app]() {
+                    app.IntercomContactsSelect();
+                });
             } else {
                 app.ToggleChatState();
             }
@@ -131,8 +137,10 @@ private:
         volume_up_button_.OnClick([this]() {
             power_save_timer_->WakeUp();
             auto& app = Application::GetInstance();
+            ESP_LOGI(TAG, "Volume UP click - Intercom visible: %d", app.IsIntercomContactsVisible());
             // Volume UP can also navigate up in Intercom
             if (app.IsIntercomContactsVisible()) {
+                ESP_LOGI(TAG, "Moving UP in Intercom");
                 app.IntercomContactsMoveUp();
                 return;
             }
@@ -169,8 +177,10 @@ private:
         volume_down_button_.OnClick([this]() {
             power_save_timer_->WakeUp();
             auto& app = Application::GetInstance();
+            ESP_LOGI(TAG, "Volume DOWN click - Intercom visible: %d", app.IsIntercomContactsVisible());
             // Volume DOWN can also navigate down in Intercom
             if (app.IsIntercomContactsVisible()) {
+                ESP_LOGI(TAG, "Moving DOWN in Intercom");
                 app.IntercomContactsMoveDown();
                 return;
             }

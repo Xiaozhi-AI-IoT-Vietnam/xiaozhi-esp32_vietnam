@@ -44,6 +44,7 @@ set(SOURCES "audio/audio_codec.cc"
             "device_state_event.cc"
             "assets.cc"
             "mqtt_notification.cc"
+            "intercom_udp.cc"
             "main.cc"
             )
 

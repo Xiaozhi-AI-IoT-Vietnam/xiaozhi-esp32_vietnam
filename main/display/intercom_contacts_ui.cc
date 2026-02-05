@@ -61,7 +61,11 @@ void IntercomContactsUI::MoveDown() {
 }
 
 void IntercomContactsUI::Select() {
+    ESP_LOGI(TAG, "Select() called: contacts=%d, selected=%d, visible=%d", 
+             (int)contacts_.size(), selected_index_, is_visible_);
+    
     if (contacts_.empty() || selected_index_ < 0 || selected_index_ >= (int)contacts_.size()) {
+        ESP_LOGW(TAG, "Select() aborted: invalid state");
         return;
     }
     
@@ -69,6 +73,8 @@ void IntercomContactsUI::Select() {
     
     if (on_selected_) {
         on_selected_(contacts_[selected_index_]);
+    } else {
+        ESP_LOGW(TAG, "on_selected_ callback is null!");
     }
 }
 
@@ -95,7 +101,14 @@ void IntercomContactsUI::Hide() {
     ESP_LOGI(TAG, "Hide Intercom UI");
     is_visible_ = false;
     if (container_) {
-        lv_obj_del(container_);
+        // Must use DisplayLockGuard for LVGL thread safety
+        auto display = Board::GetInstance().GetDisplay();
+        if (display) {
+            DisplayLockGuard lock(display);
+            lv_obj_del(container_);
+        } else {
+            lv_obj_del(container_);
+        }
         container_ = nullptr;
         title_label_ = nullptr;
         list_ = nullptr;

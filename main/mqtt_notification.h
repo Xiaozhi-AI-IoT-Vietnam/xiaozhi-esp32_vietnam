@@ -21,15 +21,34 @@ struct MqttNotificationData {
 
 /**
  * @brief Intercom message payload structure (Walkie-Talkie feature)
+ * 
+ * Supports both legacy TTS-based and new Full Duplex modes.
+ * Message types: intercom, intercom_reply, intercom_ready, 
+ *                intercom_incoming, intercom_end, intercom_error
  */
 struct IntercomData {
-  std::string type;             // "intercom" or "intercom_reply"
+  std::string type;             // Message type
   std::string from_device_name; // Name of sender device (e.g., "phòng khách")
-  std::string from_device_id;   // UUID of sender device
-  std::string message;          // Voice message content
+  std::string from_device_id;   // UUID/MAC of sender device
+  std::string message;          // Voice message content (TTS mode)
   std::string conversation_id;  // Conversation ID for reply tracking
-  std::string reply_to_mac;     // MAC address to reply to (only for "intercom")
-  bool is_reply;                // true if this is a reply message
+  std::string reply_to_mac;     // MAC address to reply to
+  bool is_reply = false;        // true if this is a reply message
+  
+  // Full Duplex Intercom fields
+  std::string session_id;       // Unique session ID for the call
+  std::string target_device;    // Name of target device
+  std::string target_status;    // "online" / "offline"
+  std::string error;            // Error code (for intercom_error)
+  std::string error_message;    // Human-readable error message
+  
+  // UDP configuration (for Full Duplex)
+  struct UdpConfig {
+    std::string server;         // UDP relay server IP
+    int port = 0;               // UDP relay server port
+    std::string key;            // AES-128 encryption key (hex)
+    std::string nonce;          // AES nonce (hex)
+  } udp;
 };
 
 /**

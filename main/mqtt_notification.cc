@@ -271,9 +271,14 @@ void MqttNotification::HandleMessage(const char *topic, const char *data,
     }
 
   } else if (strcmp(type_str, "intercom") == 0 ||
-             strcmp(type_str, "intercom_reply") == 0) {
-    // Intercom (Walkie-Talkie) message from another device
+             strcmp(type_str, "intercom_reply") == 0 ||
+             strcmp(type_str, "intercom_ready") == 0 ||
+             strcmp(type_str, "intercom_incoming") == 0 ||
+             strcmp(type_str, "intercom_end") == 0 ||
+             strcmp(type_str, "intercom_error") == 0) {
+    // Intercom messages (both legacy TTS-based and Full Duplex)
     IntercomData intercom;
+    intercom.type = type_str;  // Set type before parsing
     ParseIntercom(root, intercom);
 
     OnIntercomCallback callback;
@@ -283,8 +288,8 @@ void MqttNotification::HandleMessage(const char *topic, const char *data,
     }
 
     if (callback) {
-      ESP_LOGI(TAG, "Dispatching intercom from %s: %s",
-               intercom.from_device_name.c_str(), intercom.message.c_str());
+      ESP_LOGI(TAG, "Dispatching intercom: type=%s, session=%s",
+               intercom.type.c_str(), intercom.session_id.c_str());
       callback(intercom);
     } else {
       ESP_LOGW(TAG, "No intercom callback registered");
@@ -377,6 +382,7 @@ void MqttNotification::SetOnIntercom(OnIntercomCallback callback) {
 
 void MqttNotification::ParseIntercom(const cJSON *root,
                                      IntercomData &intercom) {
+  // Legacy fields (TTS-based intercom)
   cJSON *type = cJSON_GetObjectItem(root, "type");
   cJSON *from_device_name = cJSON_GetObjectItem(root, "from_device_name");
   cJSON *from_device_id = cJSON_GetObjectItem(root, "from_device_id");
@@ -384,12 +390,29 @@ void MqttNotification::ParseIntercom(const cJSON *root,
   cJSON *conversation_id = cJSON_GetObjectItem(root, "conversation_id");
   cJSON *reply_to_mac = cJSON_GetObjectItem(root, "reply_to_mac");
 
-  intercom.type = cJSON_IsString(type) ? type->valuestring : "intercom";
-  intercom.from_device_name = cJSON_IsString(from_device_name)
-                                  ? from_device_name->valuestring
-                                  : "thiết bị khác";
-  intercom.from_device_id =
-      cJSON_IsString(from_device_id) ? from_device_id->valuestring : "";
+  // Keep type if already set, otherwise parse from JSON
+  if (intercom.type.empty()) {
+    intercom.type = cJSON_IsString(type) ? type->valuestring : "intercom";
+  }
+  
+  // For intercom_incoming, use "from_name" and "from_device"
+  cJSON *from_name = cJSON_GetObjectItem(root, "from_name");
+  cJSON *from_device = cJSON_GetObjectItem(root, "from_device");
+  
+  if (cJSON_IsString(from_name)) {
+    intercom.from_device_name = from_name->valuestring;
+  } else if (cJSON_IsString(from_device_name)) {
+    intercom.from_device_name = from_device_name->valuestring;
+  } else {
+    intercom.from_device_name = "thiết bị khác";
+  }
+  
+  if (cJSON_IsString(from_device)) {
+    intercom.from_device_id = from_device->valuestring;
+  } else if (cJSON_IsString(from_device_id)) {
+    intercom.from_device_id = from_device_id->valuestring;
+  }
+  
   intercom.message = cJSON_IsString(message) ? message->valuestring : "";
   intercom.conversation_id =
       cJSON_IsString(conversation_id) ? conversation_id->valuestring : "";
@@ -397,7 +420,57 @@ void MqttNotification::ParseIntercom(const cJSON *root,
       cJSON_IsString(reply_to_mac) ? reply_to_mac->valuestring : "";
   intercom.is_reply = (intercom.type == "intercom_reply");
 
-  ESP_LOGI(TAG, "ParseIntercom: type=%s, from=%s, conversation_id=%s",
-           intercom.type.c_str(), intercom.from_device_name.c_str(),
-           intercom.conversation_id.c_str());
+  // Full Duplex fields
+  cJSON *session_id = cJSON_GetObjectItem(root, "session_id");
+  cJSON *target_device = cJSON_GetObjectItem(root, "target_device");
+  cJSON *target_status = cJSON_GetObjectItem(root, "target_status");
+  cJSON *error = cJSON_GetObjectItem(root, "error");
+  cJSON *reason = cJSON_GetObjectItem(root, "reason");
+  
+  if (cJSON_IsString(session_id)) {
+    intercom.session_id = session_id->valuestring;
+  }
+  if (cJSON_IsString(target_device)) {
+    intercom.target_device = target_device->valuestring;
+  }
+  if (cJSON_IsString(target_status)) {
+    intercom.target_status = target_status->valuestring;
+  }
+  if (cJSON_IsString(error)) {
+    intercom.error = error->valuestring;
+  }
+  // For intercom_error, the "message" field is the error message
+  if (intercom.type == "intercom_error" && cJSON_IsString(message)) {
+    intercom.error_message = message->valuestring;
+  }
+  // For intercom_end, capture reason
+  if (intercom.type == "intercom_end" && cJSON_IsString(reason)) {
+    intercom.error_message = reason->valuestring;  // Reuse error_message for reason
+  }
+  
+  // Parse UDP config (for Full Duplex)
+  cJSON *udp = cJSON_GetObjectItem(root, "udp");
+  if (cJSON_IsObject(udp)) {
+    cJSON *server = cJSON_GetObjectItem(udp, "server");
+    cJSON *port = cJSON_GetObjectItem(udp, "port");
+    cJSON *key = cJSON_GetObjectItem(udp, "key");
+    cJSON *nonce = cJSON_GetObjectItem(udp, "nonce");
+    
+    if (cJSON_IsString(server)) {
+      intercom.udp.server = server->valuestring;
+    }
+    if (cJSON_IsNumber(port)) {
+      intercom.udp.port = port->valueint;
+    }
+    if (cJSON_IsString(key)) {
+      intercom.udp.key = key->valuestring;
+    }
+    if (cJSON_IsString(nonce)) {
+      intercom.udp.nonce = nonce->valuestring;
+    }
+  }
+
+  ESP_LOGI(TAG, "ParseIntercom: type=%s, session=%s, from=%s",
+           intercom.type.c_str(), intercom.session_id.c_str(),
+           intercom.from_device_name.c_str());
 }

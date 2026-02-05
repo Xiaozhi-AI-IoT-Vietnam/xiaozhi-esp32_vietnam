@@ -103,17 +103,18 @@ private:
         boot_button_.OnClick([this]() {
             power_save_timer_->WakeUp();
             auto& app = Application::GetInstance();
+            ESP_LOGI(TAG, "BOOT click: state=%d, intercom_visible=%d", 
+                     app.GetDeviceState(), app.IsIntercomContactsVisible());
+            
             if (app.GetDeviceState() == kDeviceStateStarting && !WifiStation::GetInstance().IsConnected()) {
                 ResetWifiConfiguration();
                 return;
             }
             
             if (app.IsIntercomContactsVisible()) {
-                ESP_LOGI(TAG, "BOOT click: Scheduling contact selection");
-                // Must schedule to main thread to avoid LVGL crash
-                app.Schedule([&app]() {
-                    app.IntercomContactsSelect();
-                });
+                ESP_LOGI(TAG, "BOOT click: Calling contact selection directly");
+                // Call directly - avoid nested Schedule which may cause stack overflow
+                app.IntercomContactsSelect();
             } else {
                 app.ToggleChatState();
             }
@@ -124,11 +125,9 @@ private:
             power_save_timer_->WakeUp();
             auto& app = Application::GetInstance();
             if (app.IsIntercomContactsVisible()) {
-                ESP_LOGI(TAG, "Double click: Scheduling contact selection");
-                // Must schedule to main thread to avoid LVGL crash
-                app.Schedule([&app]() {
-                    app.IntercomContactsSelect();
-                });
+                ESP_LOGI(TAG, "Double click: Calling contact selection directly");
+                // Call directly - avoid nested Schedule which may cause stack overflow
+                app.IntercomContactsSelect();
             } else {
                 app.ToggleChatState();
             }

@@ -12,7 +12,11 @@ enum DeviceState {
     kDeviceStateUpgrading,
     kDeviceStateActivating,
     kDeviceStateAudioTesting,
-    kDeviceStateFatalError
+    kDeviceStateFatalError,
+    // Intercom states (Full Duplex)
+    kDeviceStateIntercomCalling,   // Đang gọi, chờ kết nối
+    kDeviceStateIntercomActive,    // Đang trong cuộc gọi (full duplex)
+    kDeviceStateIntercomIncoming   // Có cuộc gọi đến
 };
 
 #endif // _DEVICE_STATE_H_ 

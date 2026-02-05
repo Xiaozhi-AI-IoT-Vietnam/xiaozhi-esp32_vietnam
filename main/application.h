@@ -21,6 +21,7 @@
 
 #ifdef CONFIG_ENABLE_MQTT_NOTIFICATIONS
 #include "mqtt_notification.h"
+#include "intercom_udp.h"
 #endif
 
 // --- Display Weather ---
@@ -134,7 +135,7 @@ private:
   void OnMqttNotification(const MqttNotificationData &notification);
   void OnPushNotification(const std::string &title, const std::string &content);
 
-  // Intercom (Walkie-Talkie) feature
+  // Intercom (Walkie-Talkie) feature - Legacy TTS-based
   struct IntercomContext {
     bool active = false;
     std::string conversation_id;
@@ -148,6 +149,44 @@ private:
   void HandleIntercomReply(const IntercomData &intercom);
   void StartIntercomListen();
   void EndIntercomSession(const std::string &reason = "timeout");
+  
+  // Full Duplex Intercom (real-time voice relay)
+  struct FullDuplexIntercomContext {
+    bool active = false;
+    std::string session_id;
+    std::string target_mac;
+    std::string target_name;
+    
+    // UDP configuration
+    std::string udp_server;
+    int udp_port = 0;
+    std::string aes_key;
+    std::string aes_nonce;
+    
+    // FreeRTOS tasks
+    TaskHandle_t send_task = nullptr;
+    TaskHandle_t recv_task = nullptr;
+    
+    // UDP handler
+    std::unique_ptr<IntercomUdp> udp;
+    
+    // State
+    uint32_t last_activity_ms = 0;
+  };
+  FullDuplexIntercomContext fd_intercom_;
+  
+  // Full Duplex handlers
+  void HandleIntercomReady(const IntercomData &data);
+  void HandleIntercomIncoming(const IntercomData &data);
+  void HandleIntercomEndMsg(const IntercomData &data);
+  void HandleIntercomError(const IntercomData &data);
+  
+  void StartFullDuplexIntercom();
+  void StopFullDuplexIntercom(const std::string &reason = "user_ended");
+  void SendIntercomEnd();
+  
+  static void IntercomSendTask(void* param);
+  static void IntercomRecvTask(void* param);
 #endif
 
 #ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE

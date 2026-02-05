@@ -20,15 +20,19 @@
 #include <cstring>
 #include <driver/gpio.h>
 #include <esp_log.h>
+#include <esp_wifi.h>
 #include <font_awesome.h>
 #include <qrcode.h>
 #include <model_path.h>
+#include <unistd.h>
 #define TAG "Application"
 
 static const char *const STATE_STRINGS[] = {
     "unknown",    "starting",      "configuring", "idle",
     "connecting", "listening",     "speaking",    "upgrading",
-    "activating", "audio_testing", "fatal_error", "invalid_state"};
+    "activating", "audio_testing", "fatal_error",
+    // Intercom states (Full Duplex)
+    "intercom_calling", "intercom_active", "intercom_incoming"};
 
 Application::Application() {
   event_group_ = xEventGroupCreate();
@@ -465,22 +469,80 @@ void Application::InitIntercomContactsUI() {
 }
 
 void Application::OnIntercomContactSelected(const IntercomContact& contact) {
+  ESP_LOGI(TAG, "📞 OnIntercomContactSelected: %s", contact.name.c_str());
+  
   // Must schedule to main thread - button callback runs on different thread!
   Schedule([this, contact_name = contact.name, contact_mac = contact.mac]() {
-    ESP_LOGI(TAG, "📞 Selected contact: %s (MAC: %s)", contact_name.c_str(), contact_mac.c_str());
+    ESP_LOGI(TAG, "📞 Schedule: Processing selected contact: %s (MAC: %s)", 
+             contact_name.c_str(), contact_mac.c_str());
     
-    // Hide Intercom UI (safe on main thread)
+    // Hide Intercom UI first (safe on main thread)
+    ESP_LOGI(TAG, "📞 Schedule: Hiding Intercom UI...");
     intercom_contacts_ui_.Hide();
+    ESP_LOGI(TAG, "📞 Schedule: UI hidden successfully");
     
-    // Show simple notification
+#ifdef CONFIG_ENABLE_MQTT_NOTIFICATIONS
+    // Set state to calling
+    SetDeviceState(kDeviceStateIntercomCalling);
+    fd_intercom_.target_mac = contact_mac;
+    fd_intercom_.target_name = contact_name;
+    
+    // Show calling UI
     auto display = Board::GetInstance().GetDisplay();
     if (display) {
-      display->ShowNotification("Đang gọi...", 2000);
+      display->SetChatMessage("system", ("📞 Đang gọi " + contact_name + "...").c_str());
     }
     
-    ESP_LOGI(TAG, "📞 Intercom call to: %s (%s)", contact_name.c_str(), contact_mac.c_str());
+    // Send intercom_hello via MQTT  
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "intercom_hello");
+    cJSON_AddStringToObject(root, "target_mac", contact_mac.c_str());
     
-    // TODO: Implement actual intercom call via MQTT/UDP
+    // Get device MAC
+    std::string device_mac;
+    Settings settings("device");
+    device_mac = settings.GetString("mac", "");
+    if (device_mac.empty()) {
+      // Fallback: get from WiFi
+      uint8_t mac[6];
+      esp_wifi_get_mac(WIFI_IF_STA, mac);
+      char mac_str[18];
+      snprintf(mac_str, sizeof(mac_str), "%02x:%02x:%02x:%02x:%02x:%02x",
+               mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+      device_mac = mac_str;
+    }
+    
+    cJSON_AddStringToObject(root, "mac_address", device_mac.c_str());
+    cJSON_AddNumberToObject(root, "version", 3);
+    cJSON_AddStringToObject(root, "transport", "udp");
+    
+    // Audio params
+    cJSON *audio_params = cJSON_CreateObject();
+    cJSON_AddStringToObject(audio_params, "format", "opus");
+    cJSON_AddNumberToObject(audio_params, "sample_rate", 16000);
+    cJSON_AddNumberToObject(audio_params, "channels", 1);
+    cJSON_AddNumberToObject(audio_params, "frame_duration", 60);
+    cJSON_AddItemToObject(root, "audio_params", audio_params);
+    
+    char *json_str = cJSON_PrintUnformatted(root);
+    if (json_str) {
+      ESP_LOGI(TAG, "[INTERCOM] Sending intercom_hello: %s", json_str);
+      
+      // Send via existing protocol
+      if (protocol_) {
+        protocol_->SendMcpMessage(json_str);
+      }
+      
+      free(json_str);
+    }
+    cJSON_Delete(root);
+#else
+    // No MQTT notifications - just show message
+    auto display = Board::GetInstance().GetDisplay();
+    if (display) {
+      display->ShowNotification("MQTT not enabled", 2000);
+    }
+#endif
   });
 }
 
@@ -494,6 +556,18 @@ void Application::StartListening() {
     SetDeviceState(kDeviceStateAudioTesting);
     return;
   }
+
+#ifdef CONFIG_ENABLE_MQTT_NOTIFICATIONS
+  // Handle Intercom states - pressing button ends the call
+  if (device_state_ == kDeviceStateIntercomActive ||
+      device_state_ == kDeviceStateIntercomCalling ||
+      device_state_ == kDeviceStateIntercomIncoming) {
+    Schedule([this]() {
+      StopFullDuplexIntercom("user_ended");
+    });
+    return;
+  }
+#endif
 
   if (!protocol_) {
     ESP_LOGE(TAG, "Protocol not initialized");
@@ -1669,16 +1743,37 @@ void Application::OnPushNotification(const std::string &title,
 
 /**
  * @brief Handle incoming intercom message (Walkie-Talkie)
+ * Routes to legacy TTS-based handlers or Full Duplex handlers based on message type.
  * @param intercom The intercom payload
  */
 void Application::OnIntercom(const IntercomData &intercom) {
-  ESP_LOGI(TAG, "[INTERCOM] OnIntercom: type=%s, from=%s, msg=%s",
-           intercom.type.c_str(), intercom.from_device_name.c_str(),
-           intercom.message.c_str());
+  ESP_LOGI(TAG, "[INTERCOM] OnIntercom: type=%s, session=%s, from=%s",
+           intercom.type.c_str(), intercom.session_id.c_str(),
+           intercom.from_device_name.c_str());
 
-  if (intercom.is_reply) {
+  // Route based on message type
+  if (intercom.type == "intercom_ready") {
+    // Full Duplex: Server confirmed session, ready to start
+    HandleIntercomReady(intercom);
+  } 
+  else if (intercom.type == "intercom_incoming") {
+    // Full Duplex: Incoming call from another device
+    HandleIntercomIncoming(intercom);
+  }
+  else if (intercom.type == "intercom_end") {
+    // Full Duplex: Call ended by remote party
+    HandleIntercomEndMsg(intercom);
+  }
+  else if (intercom.type == "intercom_error") {
+    // Full Duplex: Error from server
+    HandleIntercomError(intercom);
+  }
+  else if (intercom.is_reply) {
+    // Legacy TTS-based: Reply from another device
     HandleIntercomReply(intercom);
-  } else {
+  } 
+  else {
+    // Legacy TTS-based: Incoming message
     HandleIntercomMessage(intercom);
   }
 }
@@ -1854,6 +1949,9 @@ void Application::StartIntercomListen() {
 /**
  * @brief End intercom session
  */
+/**
+ * @brief End intercom session
+ */
 void Application::EndIntercomSession(const std::string &reason) {
   ESP_LOGI(TAG, "[INTERCOM] Session ended: %s", reason.c_str());
 
@@ -1863,4 +1961,401 @@ void Application::EndIntercomSession(const std::string &reason) {
   intercom_context_.from_name.clear();
   intercom_context_.last_activity_ms = 0;
 }
+
+// ============================================================================
+// FULL DUPLEX INTERCOM IMPLEMENTATION
+// ============================================================================
+
+/**
+ * @brief Handle intercom_ready message from server
+ * Called when server confirms session is ready and provides UDP config
+ */
+void Application::HandleIntercomReady(const IntercomData &data) {
+  if (device_state_ != kDeviceStateIntercomCalling) {
+    ESP_LOGW(TAG, "[FD_INTERCOM] Unexpected intercom_ready in state %d", device_state_);
+    return;
+  }
+  
+  ESP_LOGI(TAG, "[FD_INTERCOM] Ready! Session=%s, Target=%s (%s)",
+           data.session_id.c_str(), data.target_device.c_str(), 
+           data.target_status.c_str());
+  
+  // Save session info
+  fd_intercom_.session_id = data.session_id;
+  fd_intercom_.target_name = data.target_device;
+  fd_intercom_.udp_server = data.udp.server;
+  fd_intercom_.udp_port = data.udp.port;
+  fd_intercom_.aes_key = data.udp.key;
+  fd_intercom_.aes_nonce = data.udp.nonce;
+  
+  // Show status
+  auto display = Board::GetInstance().GetDisplay();
+  if (data.target_status == "offline") {
+    display->SetChatMessage("system", ("📞 " + data.target_device + " (Offline)").c_str());
+    // Target offline - still try to connect, they might come online
+  } else {
+    display->SetChatMessage("system", ("📞 Đang kết nối " + data.target_device + "...").c_str());
+  }
+  
+  // Start full duplex
+  StartFullDuplexIntercom();
+}
+
+/**
+ * @brief Handle intercom_incoming message from server
+ * Called when another device is calling this device
+ */
+void Application::HandleIntercomIncoming(const IntercomData &data) {
+  ESP_LOGI(TAG, "[FD_INTERCOM] Incoming call from %s (%s)",
+           data.from_device_name.c_str(), data.from_device_id.c_str());
+  
+  // Save session info
+  fd_intercom_.session_id = data.session_id;
+  fd_intercom_.target_mac = data.from_device_id;
+  fd_intercom_.target_name = data.from_device_name;
+  fd_intercom_.udp_server = data.udp.server;
+  fd_intercom_.udp_port = data.udp.port;
+  fd_intercom_.aes_key = data.udp.key;
+  fd_intercom_.aes_nonce = data.udp.nonce;
+  
+  // Show notification
+  auto display = Board::GetInstance().GetDisplay();
+  display->ShowNotification(("📞 " + data.from_device_name).c_str());
+  
+  // Play notification sound
+  audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
+  
+  // Auto-answer and start full duplex
+  SetDeviceState(kDeviceStateIntercomIncoming);
+  
+  // Small delay then auto-answer
+  Schedule([this]() {
+    vTaskDelay(pdMS_TO_TICKS(500));
+    if (device_state_ == kDeviceStateIntercomIncoming) {
+      StartFullDuplexIntercom();
+    }
+  });
+}
+
+/**
+ * @brief Handle intercom_end message from server
+ * Called when remote party ends the call
+ */
+void Application::HandleIntercomEndMsg(const IntercomData &data) {
+  ESP_LOGI(TAG, "[FD_INTERCOM] Call ended by remote: session=%s, reason=%s",
+           data.session_id.c_str(), data.error_message.c_str());
+  StopFullDuplexIntercom("remote_ended");
+}
+
+/**
+ * @brief Handle intercom_error message from server
+ */
+void Application::HandleIntercomError(const IntercomData &data) {
+  ESP_LOGE(TAG, "[FD_INTERCOM] Error: %s - %s", 
+           data.error.c_str(), data.error_message.c_str());
+  
+  auto display = Board::GetInstance().GetDisplay();
+  
+  // Show error message
+  std::string error_msg = data.error_message.empty() ? 
+    "Lỗi kết nối" : data.error_message;
+  display->ShowNotification(error_msg.c_str(), 3000);
+  
+  StopFullDuplexIntercom("error");
+}
+
+/**
+ * @brief Start Full Duplex Intercom session
+ * Creates UDP handler and audio tasks for sending/receiving
+ */
+void Application::StartFullDuplexIntercom() {
+  if (fd_intercom_.active) {
+    ESP_LOGW(TAG, "[FD_INTERCOM] Already active");
+    return;
+  }
+  
+  ESP_LOGI(TAG, "[FD_INTERCOM] Starting full duplex with %s",
+           fd_intercom_.target_name.c_str());
+  ESP_LOGI(TAG, "[FD_INTERCOM] UDP: %s:%d", 
+           fd_intercom_.udp_server.c_str(), fd_intercom_.udp_port);
+  
+  // Get device MAC
+  std::string device_mac;
+  Settings settings("device");
+  device_mac = settings.GetString("mac", "");
+  if (device_mac.empty()) {
+    uint8_t mac[6];
+    esp_wifi_get_mac(WIFI_IF_STA, mac);
+    char mac_str[18];
+    snprintf(mac_str, sizeof(mac_str), "%02x:%02x:%02x:%02x:%02x:%02x",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    device_mac = mac_str;
+  }
+  
+  // Create and initialize UDP handler
+  fd_intercom_.udp = std::make_unique<IntercomUdp>();
+  if (!fd_intercom_.udp->Initialize(
+        fd_intercom_.session_id,
+        fd_intercom_.udp_server,
+        fd_intercom_.udp_port,
+        fd_intercom_.aes_key,
+        fd_intercom_.aes_nonce,
+        device_mac)) {
+    ESP_LOGE(TAG, "[FD_INTERCOM] Failed to initialize UDP");
+    StopFullDuplexIntercom("init_error");
+    return;
+  }
+  
+  // Connect to UDP server
+  if (!fd_intercom_.udp->Connect()) {
+    ESP_LOGE(TAG, "[FD_INTERCOM] Failed to connect UDP");
+    StopFullDuplexIntercom("connect_error");
+    return;
+  }
+  
+  fd_intercom_.active = true;
+  fd_intercom_.last_activity_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+  SetDeviceState(kDeviceStateIntercomActive);
+  
+  // Update display
+  auto display = Board::GetInstance().GetDisplay();
+  display->SetStatus("📞 Intercom");
+  display->SetChatMessage("system", ("🎤 " + fd_intercom_.target_name).c_str());
+  
+  // Create send task (mic -> UDP)
+  BaseType_t ret = xTaskCreate(
+    IntercomSendTask,
+    "ic_send",
+    32768,  // 32KB stack for Opus encoding + UDP operations
+    this,
+    5,
+    &fd_intercom_.send_task
+  );
+  
+  if (ret != pdPASS) {
+    ESP_LOGE(TAG, "[FD_INTERCOM] Failed to create send task");
+    StopFullDuplexIntercom("task_error");
+    return;
+  }
+  
+  // Create receive task (UDP -> speaker)
+  ret = xTaskCreate(
+    IntercomRecvTask,
+    "ic_recv",
+    32768,  // 32KB stack for Opus decoding + UDP operations
+    this,
+    5,
+    &fd_intercom_.recv_task
+  );
+  
+  if (ret != pdPASS) {
+    ESP_LOGE(TAG, "[FD_INTERCOM] Failed to create recv task");
+    StopFullDuplexIntercom("task_error");
+    return;
+  }
+  
+  ESP_LOGI(TAG, "[FD_INTERCOM] Full duplex started successfully");
+}
+
+/**
+ * @brief Stop Full Duplex Intercom session
+ */
+void Application::StopFullDuplexIntercom(const std::string &reason) {
+  if (!fd_intercom_.active && !fd_intercom_.udp) {
+    return;
+  }
+  
+  ESP_LOGI(TAG, "[FD_INTERCOM] Stopping: %s", reason.c_str());
+  
+  fd_intercom_.active = false;
+  
+  // Small delay to let tasks exit gracefully
+  vTaskDelay(pdMS_TO_TICKS(100));
+  
+  // Stop tasks (they check fd_intercom_.active)
+  if (fd_intercom_.send_task) {
+    // Task should self-exit when active becomes false
+    fd_intercom_.send_task = nullptr;
+  }
+  if (fd_intercom_.recv_task) {
+    fd_intercom_.recv_task = nullptr;
+  }
+  
+  // Disconnect UDP
+  if (fd_intercom_.udp) {
+    fd_intercom_.udp->Disconnect();
+    fd_intercom_.udp.reset();
+  }
+  
+  // Send intercom_end if we initiated the stop
+  if (reason == "user_ended") {
+    SendIntercomEnd();
+  }
+  
+  // Reset context
+  fd_intercom_.session_id.clear();
+  fd_intercom_.target_mac.clear();
+  fd_intercom_.target_name.clear();
+  
+  // Return to idle
+  SetDeviceState(kDeviceStateIdle);
+  
+  auto display = Board::GetInstance().GetDisplay();
+  display->ShowNotification("Kết thúc cuộc gọi", 2000);
+  display->SetStatus("");
+}
+
+/**
+ * @brief Send intercom_end message to server
+ */
+void Application::SendIntercomEnd() {
+  if (fd_intercom_.session_id.empty()) {
+    return;
+  }
+  
+  ESP_LOGI(TAG, "[FD_INTERCOM] Sending intercom_end");
+  
+  cJSON *root = cJSON_CreateObject();
+  cJSON_AddStringToObject(root, "type", "intercom_end");
+  cJSON_AddStringToObject(root, "session_id", fd_intercom_.session_id.c_str());
+  cJSON_AddStringToObject(root, "reason", "user_ended");
+  
+  char *json_str = cJSON_PrintUnformatted(root);
+  if (json_str) {
+    // Send via MQTT (use existing protocol)
+    if (protocol_) {
+      protocol_->SendMcpMessage(json_str);
+    }
+    free(json_str);
+  }
+  cJSON_Delete(root);
+}
+
+/**
+ * @brief Intercom Send Task - captures mic audio and sends via UDP
+ */
+void Application::IntercomSendTask(void* param) {
+  auto* app = static_cast<Application*>(param);
+  auto& ctx = app->fd_intercom_;
+  
+  ESP_LOGI(TAG, "[FD_INTERCOM] Send task started");
+  
+  // Audio buffer for mic capture
+  // 60ms @ 16kHz = 960 samples (mono)
+  const int samples_per_frame = 16000 * 60 / 1000;
+  std::vector<int16_t> audio_buffer;
+  
+  // Get input channels from codec
+  auto codec = Board::GetInstance().GetAudioCodec();
+  int input_channels = codec ? codec->input_channels() : 1;
+  ESP_LOGI(TAG, "[FD_INTERCOM] Input channels: %d", input_channels);
+  
+  uint32_t frame_count = 0;
+  
+  while (ctx.active && ctx.udp) {
+    if (!ctx.udp->IsConnected()) {
+      ESP_LOGW(TAG, "[FD_INTERCOM] UDP disconnected, stopping send");
+      break;
+    }
+    
+    // Read audio from microphone via AudioService
+    if (app->audio_service_.ReadAudioData(audio_buffer, 16000, samples_per_frame)) {
+      // Convert stereo to mono if needed (take left channel only)
+      std::vector<int16_t> mono_buffer;
+      if (input_channels == 2 && audio_buffer.size() >= samples_per_frame * 2) {
+        // Stereo audio - extract left channel
+        mono_buffer.resize(samples_per_frame);
+        for (int i = 0; i < samples_per_frame; i++) {
+          mono_buffer[i] = audio_buffer[i * 2];  // Left channel
+        }
+      } else if (audio_buffer.size() == samples_per_frame) {
+        // Already mono
+        mono_buffer = std::move(audio_buffer);
+      } else {
+        // Unknown format - try to extract first samples_per_frame samples
+        mono_buffer.resize(samples_per_frame);
+        int copy_count = std::min((int)audio_buffer.size(), samples_per_frame);
+        for (int i = 0; i < copy_count; i++) {
+          mono_buffer[i] = audio_buffer[i];
+        }
+      }
+      
+      // Send audio via UDP (encodes to Opus internally)
+      if (!ctx.udp->SendAudio(std::move(mono_buffer))) {
+        ESP_LOGW(TAG, "[FD_INTERCOM] Failed to send audio");
+      } else {
+        frame_count++;
+        if (frame_count % 100 == 0) {  // Log every 6 seconds
+          ESP_LOGI(TAG, "[FD_INTERCOM] Sent %lu frames", frame_count);
+        }
+      }
+    }
+    
+    // Small delay to prevent tight loop
+    vTaskDelay(pdMS_TO_TICKS(5));
+  }
+  
+  ESP_LOGI(TAG, "[FD_INTERCOM] Send task ended (sent %lu frames)", frame_count);
+  ctx.send_task = nullptr;
+  vTaskDelete(NULL);
+}
+
+/**
+ * @brief Intercom Receive Task - receives UDP audio and plays
+ */
+void Application::IntercomRecvTask(void* param) {
+  auto* app = static_cast<Application*>(param);
+  auto& ctx = app->fd_intercom_;
+  
+  ESP_LOGI(TAG, "[FD_INTERCOM] Recv task started");
+  
+  std::vector<int16_t> pcm_buffer;
+  uint32_t frame_count = 0;
+  uint32_t timeout_count = 0;
+  
+  // Get audio codec for output
+  auto* codec = Board::GetInstance().GetAudioCodec();
+  
+  while (ctx.active && ctx.udp) {
+    if (!ctx.udp->IsConnected()) {
+      ESP_LOGW(TAG, "[FD_INTERCOM] UDP disconnected, stopping recv");
+      break;
+    }
+    
+    // Receive audio from UDP (100ms timeout)
+    if (ctx.udp->ReceiveAudio(pcm_buffer, 100)) {
+      // Update activity timestamp
+      ctx.last_activity_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+      timeout_count = 0;
+      
+      // Output to speaker
+      if (codec && !pcm_buffer.empty()) {
+        codec->OutputData(pcm_buffer);
+        frame_count++;
+        
+        if (frame_count % 100 == 0) {  // Log every 6 seconds
+          ESP_LOGI(TAG, "[FD_INTERCOM] Played %lu frames", frame_count);
+        }
+      }
+    } else {
+      timeout_count++;
+      
+      // Check for extended silence (30 seconds = 300 * 100ms timeouts)
+      if (timeout_count > 300) {
+        ESP_LOGW(TAG, "[FD_INTERCOM] No data received for 30s, timing out");
+        
+        // Schedule stop on main thread
+        app->Schedule([app]() {
+          app->StopFullDuplexIntercom("timeout");
+        });
+        break;
+      }
+    }
+  }
+  
+  ESP_LOGI(TAG, "[FD_INTERCOM] Recv task ended (played %lu frames)", frame_count);
+  ctx.recv_task = nullptr;
+  vTaskDelete(NULL);
+}
+
 #endif
